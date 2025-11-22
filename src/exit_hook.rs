@@ -25,7 +25,7 @@ impl ExitHook {
     */
     pub fn new<F>(f: F) -> Self
     where
-        F: Fn() + Send + Sync + 'static
+        F: Fn() + Send + Sync + 'static,
     {
         ExitHook {
             cleanup_fn: Arc::new(f),

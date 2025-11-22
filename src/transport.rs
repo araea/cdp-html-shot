@@ -1,15 +1,15 @@
-use tokio::time;
-use time::Duration;
-use serde_json::Value;
+use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
-use anyhow::{anyhow, Result};
-use tokio::sync::{mpsc, oneshot};
 use serde::{Deserialize, Serialize};
-use tokio_tungstenite::connect_async;
+use serde_json::Value;
 use std::{
     collections::HashMap,
     sync::{Arc, Condvar, Mutex},
 };
+use time::Duration;
+use tokio::sync::{mpsc, oneshot};
+use tokio::time;
+use tokio_tungstenite::connect_async;
 
 use crate::transport_actor::{TransportActor, TransportMessage, TransportResponse};
 
@@ -50,7 +50,7 @@ pub(crate) struct Response {
 #[derive(Debug)]
 pub(crate) struct Transport {
     tx: mpsc::Sender<TransportMessage>,
-    shutdown_tx: Option<oneshot::Sender<()>>,
+    shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     shutdown_signal: Arc<ShutdownSignal>,
 }
 
@@ -77,13 +77,19 @@ impl Transport {
 
         tokio::spawn(actor.run(ws_stream));
 
-        Ok(Self { tx, shutdown_tx: Some(shutdown_tx), shutdown_signal: signal })
+        Ok(Self {
+            tx,
+            shutdown_tx: Mutex::new(Some(shutdown_tx)),
+            shutdown_signal: signal,
+        })
     }
 
     pub(crate) async fn send(&self, command: Value) -> Result<TransportResponse> {
         let (response_tx, response_rx) = oneshot::channel();
 
-        self.tx.send(TransportMessage::Request(command, response_tx)).await?;
+        self.tx
+            .send(TransportMessage::Request(command, response_tx))
+            .await?;
 
         match time::timeout(Duration::from_secs(5), response_rx).await {
             Ok(response) => response?,
@@ -94,7 +100,12 @@ impl Transport {
     pub(crate) async fn get_target_msg(&self, msg_id: usize) -> Result<TransportResponse> {
         let (response_tx, response_rx) = oneshot::channel();
 
-        self.tx.send(TransportMessage::ListenTargetMessage(msg_id as u64, response_tx)).await?;
+        self.tx
+            .send(TransportMessage::ListenTargetMessage(
+                msg_id as u64,
+                response_tx,
+            ))
+            .await?;
 
         match time::timeout(Duration::from_secs(5), response_rx).await {
             Ok(response) => response?,
@@ -102,12 +113,15 @@ impl Transport {
         }
     }
 
-    pub(crate) fn shutdown(&mut self) {
-        self.shutdown_tx
-            .take()
-            .unwrap()
-            .send(())
-            .unwrap();
+    pub(crate) fn shutdown(&self) {
+        let tx = {
+            let mut lock = self.shutdown_tx.lock().unwrap();
+            lock.take()
+        };
+
+        if let Some(tx) = tx {
+            let _ = tx.send(());
+        }
 
         self.shutdown_signal.wait();
     }

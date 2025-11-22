@@ -1,7 +1,7 @@
-use tokio::time;
 use anyhow::Result;
 use base64::Engine;
 use cdp_html_shot::Browser;
+use tokio::time;
 
 #[tokio::main]
 async fn main() -> Result<()> {

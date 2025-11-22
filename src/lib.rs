@@ -69,19 +69,19 @@ async fn main() -> Result<()> {
 ```
 */
 
-mod tab;
 mod browser;
-mod element;
-mod transport;
-mod general_utils;
-mod transport_actor;
 mod capture_options;
+mod element;
 #[cfg(feature = "atexit")]
 mod exit_hook;
+mod general_utils;
+mod tab;
+mod transport;
+mod transport_actor;
 
-pub use tab::Tab;
-pub use element::Element;
 pub use browser::Browser;
 pub use capture_options::CaptureOptions;
+pub use element::Element;
 #[cfg(feature = "atexit")]
 pub use exit_hook::ExitHook;
+pub use tab::Tab;

@@ -1,6 +1,6 @@
-use tokio::task;
-use futures_util::future::join_all;
 use cdp_html_shot::{Browser, ExitHook};
+use futures_util::future::join_all;
+use tokio::task;
 
 #[tokio::main]
 async fn main() {

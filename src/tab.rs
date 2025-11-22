@@ -1,11 +1,11 @@
-use std::sync::Arc;
-use serde_json::json;
 use anyhow::{Context, Result};
+use serde_json::json;
+use std::sync::Arc;
 
-use crate::general_utils;
 use crate::element::Element;
-use crate::transport::Transport;
+use crate::general_utils;
 use crate::general_utils::next_id;
+use crate::transport::Transport;
 use crate::transport_actor::TransportResponse;
 
 /// A tab instance.
@@ -33,13 +33,18 @@ impl Tab {
     ```
     */
     pub(crate) async fn new(transport: Arc<Transport>) -> Result<Self> {
-        let TransportResponse::Response(res) = transport.send(json!({
-            "id": next_id(),
-            "method": "Target.createTarget",
-            "params": {
-                "url": "about:blank"
-            }
-        })).await? else { panic!() };
+        let TransportResponse::Response(res) = transport
+            .send(json!({
+                "id": next_id(),
+                "method": "Target.createTarget",
+                "params": {
+                    "url": "about:blank"
+                }
+            }))
+            .await?
+        else {
+            panic!()
+        };
 
         let target_id = res
             .result
@@ -48,18 +53,20 @@ impl Tab {
             .as_str()
             .unwrap();
 
-        let TransportResponse::Response(res) = transport.send(json!({
-            "id": next_id(),
-            "method": "Target.attachToTarget",
-            "params": {
-                "targetId": target_id
-            }
-        })).await? else { panic!() };
+        let TransportResponse::Response(res) = transport
+            .send(json!({
+                "id": next_id(),
+                "method": "Target.attachToTarget",
+                "params": {
+                    "targetId": target_id
+                }
+            }))
+            .await?
+        else {
+            panic!()
+        };
 
-        let session_id = res
-            .result["sessionId"]
-            .as_str()
-            .unwrap();
+        let session_id = res.result["sessionId"].as_str().unwrap();
 
         Ok(Self {
             transport,
@@ -69,7 +76,9 @@ impl Tab {
     }
 
     /**
-    Set the content of the tab.
+    Set the content of the tab and wait for:
+    1. Resources to load (Images, Fonts, CSS).
+    2. JavaScript to finish executing (DOM stability check).
 
     # Example
     ```no_run
@@ -80,7 +89,10 @@ impl Tab {
     async fn main() -> Result<()> {
         let browser = Browser::new().await?;
         let tab = browser.new_tab().await?;
-        tab.set_content("<h1>Hello world!</h1>").await?;
+
+        // This will wait for the page to become completely "stable" before returning
+        tab.set_content(complex_html_content).await?;
+
         Ok(())
     }
     ```
@@ -95,73 +107,132 @@ impl Tab {
 
         let expression = format!(
             r#"
-    (async () => {{
-        try {{
-            const BACKTICK = '`';
-            document.open();
-            document.write(String.raw`{content}`);
-            document.close();
+        (async () => {{
+            try {{
+                const BACKTICK = '`';
 
-            await Promise.race([
-                new Promise((resolve) => {{
-                    const checkResources = async () => {{
-                        if (document.readyState !== 'complete') {{
-                            return false;
-                        }}
+                // 1. 注入内容
+                document.open();
+                document.write(String.raw`{content}`);
+                document.close();
 
-                        const images = Array.from(document.images);
-                        const imagePromises = images.map(img => {{
-                            if (img.complete) return Promise.resolve();
-                            return new Promise(resolve => {{
-                                img.onload = resolve;
-                                img.onerror = resolve;
-                            }});
-                        }});
+                // === 配置项 ===
+                const TOTAL_TIMEOUT = 15000;
+                const STABILITY_THRESHOLD = 200;
+                // ============
 
-                        const styleSheets = Array.from(document.styleSheets);
-                        const stylePromises = styleSheets.map(sheet => {{
-                            if (!sheet.href) return Promise.resolve();
-                            return new Promise(resolve => {{
-                                const link = document.querySelector(`link[href="${{sheet.href}}"]`);
-                                if (link.sheet) resolve();
-                                else {{
-                                    link.onload = resolve;
-                                    link.onerror = resolve;
-                                }}
-                            }});
-                        }});
+                const startTime = Date.now();
 
-                        await Promise.all([...imagePromises, ...stylePromises]);
+                await new Promise((resolve, reject) => {{
+                    let stabilityTimer = null;
+                    let observer = null;
 
-                        return new Promise(resolve => {{
-                            requestAnimationFrame(() => {{
-                                requestAnimationFrame(resolve);
-                            }});
-                        }});
+                    // 结束函数：清理并返回
+                    const finish = () => {{
+                        if (observer) observer.disconnect();
+                        if (stabilityTimer) clearTimeout(stabilityTimer);
+                        resolve(true);
                     }};
 
-                    checkResources().then(resolved => {{
-                        if (!resolved) {{
-                            window.addEventListener('load', () => {{
-                                checkResources().then(resolve);
-                            }});
-                        }} else {{
-                            resolve(true);
+                    // 资源加载检查器
+                    const checkResources = async () => {{
+                        // 超时检查
+                        if (Date.now() - startTime > TOTAL_TIMEOUT) {{
+                            if (observer) observer.disconnect();
+                            reject(new Error('Timeout waiting for page stability'));
+                            return;
                         }}
-                    }});
-                }}),
 
-                new Promise((_, reject) => {{
-                    setTimeout(() => reject(new Error('Timeout')), 30000);
-                }})
-            ]);
+                        // A. 等待基础状态 complete (确保 defer 脚本已运行)
+                        if (document.readyState !== 'complete') {{
+                            setTimeout(checkResources, 100);
+                            return;
+                        }}
 
-            return 'Page loaded successfully';
-        }} catch (error) {{
-            throw new Error(`Failed to set content: ${{error.message}}`);
-        }}
-    }})();
-    "#
+                        // B. 等待字体加载
+                        await document.fonts.ready;
+
+                        // C. 检查关键资源 (CSS 和 图片)
+                        const resources = [
+                            ...Array.from(document.querySelectorAll('link[rel="stylesheet"]')),
+                            ...Array.from(document.images)
+                        ];
+
+                        const pending = resources.filter(el => {{
+                            if (el.tagName === 'LINK') return !el.sheet;
+                            if (el.tagName === 'IMG') return !el.complete;
+                            return false;
+                        }});
+
+                        if (pending.length > 0) {{
+                            // 还有资源没加载完，给它们绑定事件并继续轮询
+                            // 这里不做 await，而是通过轮询来检查状态，因为 onload 可能漏掉
+                            setTimeout(checkResources, 100);
+                            return;
+                        }}
+
+                        // === 资源加载完毕，开始 DOM 稳定性检查 ===
+                        startStabilityCheck();
+                    }};
+
+                    // DOM 稳定性检查器
+                    const startStabilityCheck = () => {{
+                        // 如果已经启动过观察者，就不重复启动
+                        if (observer) return;
+
+                        let lastMutationTime = Date.now();
+
+                        // 创建观察者：只要 DOM 变动，就更新最后变动时间
+                        observer = new MutationObserver((mutations) => {{
+                            lastMutationTime = Date.now();
+                            // 可以在这里 console.log('DOM changed by JS...');
+                        }});
+
+                        // 监听子节点变化、属性变化、文本内容变化
+                        observer.observe(document.body, {{
+                            childList: true,
+                            subtree: true,
+                            attributes: true,
+                            characterData: true
+                        }});
+
+                        // 轮询检查是否“静止”了足够长的时间
+                        const checkStabilityLoop = () => {{
+                            const now = Date.now();
+
+                            // 总超时保护
+                            if (now - startTime > TOTAL_TIMEOUT) {{
+                                finish(); // 即使不稳定也强制结束，避免死循环
+                                return;
+                            }}
+
+                            // 如果距离上次变动已经超过了阈值 (例如 500ms)
+                            if (now - lastMutationTime >= STABILITY_THRESHOLD) {{
+                                // 双重 requestAnimationFrame 确保渲染管道已清空
+                                requestAnimationFrame(() => {{
+                                    requestAnimationFrame(() => {{
+                                        finish();
+                                    }});
+                                }});
+                            }} else {{
+                                // 还没静止，继续等
+                                setTimeout(checkStabilityLoop, 100);
+                            }}
+                        }};
+
+                        checkStabilityLoop();
+                    }};
+
+                    // 启动流程
+                    checkResources();
+                }});
+
+                return 'Page fully stable';
+            }} catch (error) {{
+                throw new Error(`Failed to set content: ${{error.message}}`);
+            }}
+        }})();
+        "#
         );
 
         let msg_id = next_id();
@@ -171,10 +242,13 @@ impl Tab {
             "params": {
                 "expression": expression,
                 "awaitPromise": true,
+                "returnByValue": true
             }
-        }).to_string();
+        })
+        .to_string();
 
-        general_utils::send_and_get_msg(self.transport.clone(), msg_id, &self.session_id, msg).await?;
+        general_utils::send_and_get_msg(self.transport.clone(), msg_id, &self.session_id, msg)
+            .await?;
 
         Ok(self)
     }
@@ -196,20 +270,21 @@ impl Tab {
     }
     ```
     */
-    pub async fn find_element(&self, selector: &str) -> Result<Element> {
+    pub async fn find_element(&self, selector: &str) -> Result<Element<'_>> {
         let msg_id = next_id();
         let msg = json!({
             "id": msg_id,
             "method": "DOM.getDocument",
             "params": {}
-        }).to_string();
+        })
+        .to_string();
 
-        let res = general_utils::send_and_get_msg(self.transport.clone(), msg_id, &self.session_id, msg).await?;
+        let res =
+            general_utils::send_and_get_msg(self.transport.clone(), msg_id, &self.session_id, msg)
+                .await?;
 
         let msg = general_utils::serde_msg(&res);
-        let node_id = msg["result"]["root"]["nodeId"]
-            .as_u64()
-            .unwrap();
+        let node_id = msg["result"]["root"]["nodeId"].as_u64().unwrap();
 
         let msg_id = next_id();
         let msg = json!({
@@ -219,9 +294,12 @@ impl Tab {
                 "nodeId": node_id,
                 "selector": selector
             }
-        }).to_string();
+        })
+        .to_string();
 
-        let res = general_utils::send_and_get_msg(self.transport.clone(), msg_id, &self.session_id, msg).await?;
+        let res =
+            general_utils::send_and_get_msg(self.transport.clone(), msg_id, &self.session_id, msg)
+                .await?;
 
         let msg = general_utils::serde_msg(&res);
 
@@ -258,9 +336,11 @@ impl Tab {
             "params": {
                 "targetId": self.target_id
             }
-        }).to_string();
+        })
+        .to_string();
 
-        general_utils::send_and_get_msg(self.transport.clone(), msg_id, &self.session_id, msg).await?;
+        general_utils::send_and_get_msg(self.transport.clone(), msg_id, &self.session_id, msg)
+            .await?;
 
         Ok(self)
     }
@@ -297,9 +377,11 @@ impl Tab {
             "params": {
                 "url": url
             }
-        }).to_string();
+        })
+        .to_string();
 
-        general_utils::send_and_get_msg(self.transport.clone(), msg_id, &self.session_id, msg).await?;
+        general_utils::send_and_get_msg(self.transport.clone(), msg_id, &self.session_id, msg)
+            .await?;
 
         Ok(self)
     }
@@ -329,9 +411,11 @@ impl Tab {
             "params": {
                 "targetId": self.target_id
             }
-        }).to_string();
+        })
+        .to_string();
 
-        general_utils::send_and_get_msg(self.transport.clone(), msg_id, &self.session_id, msg).await?;
+        general_utils::send_and_get_msg(self.transport.clone(), msg_id, &self.session_id, msg)
+            .await?;
 
         Ok(())
     }

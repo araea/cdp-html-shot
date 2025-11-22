@@ -12,8 +12,7 @@ impl BrowserBuilder {
     /// Create a new BrowserBuilder with default configuration.
     pub fn new() -> Self {
         Self {
-            config: BrowserConfig::new()
-                .expect("Failed to create default browser config")
+            config: BrowserConfig::new().expect("Failed to create default browser config"),
         }
     }
 
@@ -23,7 +22,7 @@ impl BrowserBuilder {
         self
     }
 
-    /// Configure additional options here as needed.
+    // Configure additional options here as needed.
     // pub fn with_option(mut self, option: Option) -> Self { ... }
 
     /// Build and launch the browser with the configured options.

@@ -1,70 +1,53 @@
-use std::net;
-use which::which;
-use std::path::{Path, PathBuf};
+use anyhow::{Context, Result, anyhow};
 use rand::prelude::SliceRandom;
-use anyhow::{anyhow, Context, Result};
+use std::net;
+use std::path::{Path, PathBuf};
+use which::which;
 
 #[cfg(windows)]
 use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
 
 use crate::browser::temp_dir::CustomTempDir;
 
-static DEFAULT_ARGS: [&str; 37] = [
-    // System Settings
-    "--no-sandbox",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--no-experiments",
-    "--no-pings",
-
-    // Memory Optimization
-    "--js-flags=--max-old-space-size=8192",  // Set JS heap to 8GB
-    "--disk-cache-size=67108864",            // 64MB cache
-    "--memory-pressure-off",
-    "--aggressive-cache-discard",
-    "--disable-dev-shm-usage",
-
-    // Process Management
-    "--process-per-site",
-    "--disable-hang-monitor",
-    "--disable-renderer-backgrounding",
-    "--disable-background-timer-throttling",
-    "--disable-backgrounding-occluded-windows",
-
-    // Disable Optional Features
-    "--disable-sync",
+static DEFAULT_ARGS: [&str; 29] = [
+    // === 核心模式 (必须用 new 才能保证渲染正确) ===
+    "--headless=new",
+    // === 进程与内存优化 (针对低配) ===
+    "--no-sandbox",                        // 减少进程开销 (Docker/Root 下必须)
+    "--no-zygote",                         // 禁用 Zygote 进程，节省内存
+    "--in-process-gpu",                    // 将 GPU 模拟放在主进程，减少进程上下文切换
+    "--disable-dev-shm-usage",             // 解决 Docker 内存溢出
+    "--js-flags=--max-old-space-size=512", // 限制 JS 堆内存为 512MB，防止 OOM 导致服务器卡死
+    "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider", // 禁用无用后台特性
+    "--disable-background-networking", // 禁止后台网络活动
+    "--disable-component-update",      // 禁止组件更新
+    "--disable-domain-reliability",    // 禁止域名可靠性监测
+    // === 渲染优化 (软件渲染加速) ===
+    "--disable-gpu",                 // 服务器通常无 GPU
+    "--use-gl=swiftshader",          // 强制使用 CPU 软件渲染
+    "--disable-software-rasterizer", // 注意：这里要删掉这行！不能禁用软件光栅化，否则白屏
+    // "--disable-software-rasterizer",
+    "--force-color-profile=srgb", // 避免颜色转换的 CPU 开销
+    // === 网络与缓存 (提速关键) ===
+    // 开启磁盘缓存，第二次生成相同图片会秒开
+    "--disk-cache-dir=/tmp/chrome-cache",
+    "--disk-cache-size=33554432", // 限制缓存 32MB，避免磁盘 I/O 爆炸
+    "--enable-async-dns",         // 异步 DNS
+    "--no-pings",                 // 禁止审计 Ping
+    "--disable-ipv6",             // 如果你服务器不支持 IPv6，禁用它可以减少连接尝试超时
+    // === 视觉与窗口 ===
+    "--hide-scrollbars",       // 隐藏滚动条，不需要渲染它
+    "--mute-audio",            // 静音
+    "--window-size=1200,1600", // 按需设置，不要设太大 (如 4K)，像素越多 CPU 渲染越慢！
+    // === 杂项 ===
     "--disable-breakpad",
     "--disable-infobars",
-    "--disable-extensions",
-    "--disable-default-apps",
     "--disable-notifications",
     "--disable-popup-blocking",
-    "--disable-prompt-on-repost",
-    "--disable-client-side-phishing-detection",
-
-    // Network Settings
-    "--enable-async-dns",
-    "--enable-parallel-downloading",
-    "--ignore-certificate-errors",
-    "--disable-http-cache",
-
-    // Graphics Settings
-    "--disable-gpu",
-    "--use-gl=swiftshader",            // Use software rendering
-    "--disable-gpu-compositing",
-    "--force-color-profile=srgb",
-    "--disable-software-rasterizer",
-
-    // Feature Flags
-    "--disable-features=TranslateUI,BlinkGenPropertyTrees,AudioServiceOutOfProcess",
-    "--enable-features=NetworkService,NetworkServiceInProcess,CalculateNativeWinOcclusion",
-
-    // Performance
-    "--disable-ipc-flooding-protection",
-    "--no-zygote",
-
-    // Logging
-    // "--enable-logging=stderr"
+    "--no-first-run",
+    "--no-default-browser-check",
+    // === 反爬伪装 ===
+    "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
 ];
 
 pub(crate) struct BrowserConfig {
@@ -103,10 +86,10 @@ impl BrowserConfig {
 }
 
 fn default_executable() -> Result<PathBuf> {
-    if let Ok(path) = std::env::var("CHROME") {
-        if Path::new(&path).exists() {
-            return Ok(path.into());
-        }
+    if let Ok(path) = std::env::var("CHROME")
+        && Path::new(&path).exists()
+    {
+        return Ok(path.into());
     }
 
     let apps = [
@@ -157,9 +140,7 @@ fn default_executable() -> Result<PathBuf> {
             return Ok(path);
         }
 
-        let windows_apps = [
-            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        ];
+        let windows_apps = [r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"];
         for path in windows_apps.iter() {
             let path = Path::new(path);
             if path.exists() {

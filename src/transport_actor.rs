@@ -1,20 +1,12 @@
-use tokio::net::TcpStream;
-use anyhow::{anyhow, Result};
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, oneshot};
-use serde::{Deserialize, Serialize};
-use futures_util::{SinkExt, StreamExt};
+use anyhow::{Result, anyhow};
 use futures_util::stream::{SplitSink, SplitStream};
-use std::{
-    sync::Arc,
-    collections::HashMap,
-};
-use tokio_tungstenite::{
-    MaybeTlsStream,
-    WebSocketStream,
-    tungstenite::Message,
-};
-
+use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{collections::HashMap, sync::Arc};
+use tokio::net::TcpStream;
+use tokio::sync::{mpsc, oneshot};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
 
 use crate::general_utils;
 use crate::general_utils::next_id;
@@ -47,8 +39,10 @@ pub(crate) struct TargetMessage {
 }
 
 impl TransportActor {
-    pub(crate) async fn run(mut self, mut ws_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>)
-    {
+    pub(crate) async fn run(
+        mut self,
+        mut ws_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+    ) {
         loop {
             tokio::select! {
                 Some(msg) = ws_stream.next() => {
@@ -116,7 +110,8 @@ impl TransportActor {
 
         match self.ws_sink.send(message).await {
             Ok(_) => {
-                self.pending_requests.insert(command["id"].as_u64().unwrap(), response_tx);
+                self.pending_requests
+                    .insert(command["id"].as_u64().unwrap(), response_tx);
             }
             Err(e) => {
                 let _ = response_tx.send(Err(anyhow!("Connection error: {}", e)));
@@ -138,7 +133,10 @@ impl TransportActor {
         if message.get("id").is_none() {
             return;
         }
-        if let Some(sender) = self.pending_requests.remove(&message.get("id").unwrap().as_u64().unwrap()) {
+        if let Some(sender) = self
+            .pending_requests
+            .remove(&message.get("id").unwrap().as_u64().unwrap())
+        {
             let _ = sender.send(Ok(TransportResponse::Target(msg)));
         }
     }
@@ -155,7 +153,11 @@ impl TransportActor {
         }
     }
 
-    async fn listen_target_msg(&mut self, msg_id: u64, response_tx: oneshot::Sender<Result<TransportResponse>>) {
+    async fn listen_target_msg(
+        &mut self,
+        msg_id: u64,
+        response_tx: oneshot::Sender<Result<TransportResponse>>,
+    ) {
         self.pending_requests.insert(msg_id, response_tx);
     }
 }

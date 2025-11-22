@@ -1,5 +1,5 @@
-use regex::Regex;
 use anyhow::{Context, Result};
+use regex::Regex;
 use std::io::{BufRead, BufReader};
 use std::process::{ChildStderr, Command, Stdio};
 
@@ -32,8 +32,7 @@ pub(crate) async fn get_websocket_url(stderr: ChildStderr) -> Result<String> {
         .context("Failed to get ws url")
 }
 
-async fn ws_url_from_reader(reader: BufReader<ChildStderr>) -> Result<Option<String>>
-{
+async fn ws_url_from_reader(reader: BufReader<ChildStderr>) -> Result<Option<String>> {
     let re = Regex::new(r"listening on (.*/devtools/browser/.*)$")?;
 
     let extract = |text: &str| -> Option<String> {

@@ -1,9 +1,9 @@
-use serde_json::json;
 use anyhow::{Context, Result};
+use serde_json::json;
 
-use crate::tab::Tab;
 use crate::general_utils;
 use crate::general_utils::next_id;
+use crate::tab::Tab;
 
 /// Represents screenshot configuration parameters.
 #[derive(Debug)]
@@ -42,15 +42,20 @@ impl<'a> Element<'a> {
                 "nodeId": node_id,
                 "depth": 100
             }
-        }).to_string();
+        })
+        .to_string();
 
-        let res = general_utils::send_and_get_msg(parent.transport.clone(), msg_id, &parent.session_id, msg).await?;
+        let res = general_utils::send_and_get_msg(
+            parent.transport.clone(),
+            msg_id,
+            &parent.session_id,
+            msg,
+        )
+        .await?;
 
         let msg = general_utils::serde_msg(&res);
 
-        let node = msg["result"]
-            .get("node")
-            .context("Failed to get node")?;
+        let node = msg["result"].get("node").context("Failed to get node")?;
 
         // let attributes = node
         //     .get("attributes")
@@ -120,25 +125,25 @@ impl<'a> Element<'a> {
             "params": {
                 "backendNodeId": self.backend_node_id
             }
-        }).to_string();
+        })
+        .to_string();
 
         let res = general_utils::send_and_get_msg(
             self.parent.transport.clone(),
             msg_id,
             &self.parent.session_id,
-            msg
-        ).await?;
+            msg,
+        )
+        .await?;
 
         let msg = general_utils::serde_msg(&res);
-        let model = msg["result"]
-            .get("model")
-            .context("Failed to get model")?;
+        let model = msg["result"].get("model").context("Failed to get model")?;
 
         Ok((
             model["border"][0].as_f64().unwrap(), // top_left_x
             model["border"][1].as_f64().unwrap(), // top_left_y
             model["border"][2].as_f64().unwrap(), // top_right_x
-            model["border"][5].as_f64().unwrap()  // bottom_left_y
+            model["border"][5].as_f64().unwrap(), // bottom_left_y
         ))
     }
 
@@ -160,10 +165,10 @@ impl<'a> Element<'a> {
             "captureBeyondViewport": true,
         });
 
-        if config.format == "jpeg" {
-            if let Some(quality) = config.quality {
-                params["quality"] = json!(quality);
-            }
+        if config.format == "jpeg"
+            && let Some(quality) = config.quality
+        {
+            params["quality"] = json!(quality);
         }
 
         let msg_id = next_id();
@@ -171,15 +176,17 @@ impl<'a> Element<'a> {
             "id": msg_id,
             "method": "Page.captureScreenshot",
             "params": params
-        }).to_string();
+        })
+        .to_string();
 
         self.parent.activate().await?;
         let res = general_utils::send_and_get_msg(
             self.parent.transport.clone(),
             msg_id,
             &self.parent.session_id,
-            msg
-        ).await?;
+            msg,
+        )
+        .await?;
 
         let msg = general_utils::serde_msg(&res);
         let base64 = msg["result"]
@@ -197,11 +204,13 @@ impl<'a> Element<'a> {
         self.take_screenshot_with_config(ScreenshotConfig {
             format: "jpeg",
             quality: Some(90),
-        }).await
+        })
+        .await
     }
 
     /// Capture a raw screenshot of the element in PNG format.
     pub async fn raw_screenshot(&self) -> Result<String> {
-        self.take_screenshot_with_config(ScreenshotConfig::default()).await
+        self.take_screenshot_with_config(ScreenshotConfig::default())
+            .await
     }
 }

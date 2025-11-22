@@ -1,205 +1,119 @@
-mod temp_dir;
-mod browser_utils;
-mod browser_config;
 mod browser_builder;
+mod browser_config;
+mod browser_utils;
+mod temp_dir;
 
-use log::error;
-use std::sync::Arc;
+use anyhow::{Context, Result, anyhow};
+use browser_config::BrowserConfig;
+use log::warn;
 use serde_json::json;
 use std::process::Child;
-use tokio::sync::OnceCell;
+use std::sync::{Arc, Mutex};
 use temp_dir::CustomTempDir;
-use anyhow::{Context, Result};
-use browser_config::BrowserConfig;
+use tokio::sync::Mutex as AsyncMutex;
 
-use crate::tab::Tab;
 use crate::CaptureOptions;
-use crate::transport::Transport;
-use crate::general_utils::next_id;
-use crate::transport_actor::TransportResponse;
 use crate::browser::browser_builder::BrowserBuilder;
+use crate::general_utils::next_id;
+use crate::tab::Tab;
+use crate::transport::Transport;
+use crate::transport_actor::TransportResponse;
 
-/// The global browser instance.
-static mut BROWSER: OnceCell<Arc<Browser>> = OnceCell::const_new();
+static GLOBAL_BROWSER: AsyncMutex<Option<Arc<Browser>>> = AsyncMutex::const_new(None);
 
 #[derive(Debug)]
-struct Process(pub Child, pub CustomTempDir);
+struct Process {
+    child: Child,
+    _temp_dir: CustomTempDir,
+}
 
 /// A browser instance.
 #[derive(Debug)]
 pub struct Browser {
     transport: Arc<Transport>,
-    process: Process,
-    is_closed: bool,
+    process: Mutex<Option<Process>>,
 }
 
-unsafe impl Send for Browser {}
-unsafe impl Sync for Browser {}
-
 impl Browser {
-    /**
-    Create a new browser instance with default configuration (headless).
-
-    # Example
-    ```no_run
-    use cdp_html_shot::Browser;
-    use anyhow::Result;
-
-    #[tokio::main]
-    async fn main() -> Result<()> {
-        let browser = Browser::new().await?;
-        Ok(())
-    }
-    ```
-    */
+    /// Create a new browser instance with default configuration (headless).
     pub async fn new() -> Result<Self> {
         BrowserBuilder::new().build().await
     }
 
     /// Create a new browser instance with a visible window.
     pub async fn new_with_head() -> Result<Self> {
-        BrowserBuilder::new()
-            .headless(false)
-            .build()
-            .await
+        BrowserBuilder::new().headless(false).build().await
     }
 
     /// Create browser instance with custom configuration.
     async fn create_browser(config: BrowserConfig) -> Result<Self> {
         let mut child = browser_utils::spawn_chrome_process(&config)?;
-        let ws_url = browser_utils::get_websocket_url(
-            child.stderr.take().context("Failed to get stderr")?
-        ).await?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("Failed to get stderr from Chrome process")?;
+
+        let ws_url = browser_utils::get_websocket_url(stderr).await?;
 
         Ok(Self {
             transport: Arc::new(Transport::new(&ws_url).await?),
-            process: Process(child, config.temp_dir),
-            is_closed: false,
+            process: Mutex::new(Some(Process {
+                child,
+                _temp_dir: config.temp_dir,
+            })),
         })
     }
 
-    /**
-    Create a new tab.
-
-    # Example
-    ```no_run
-    use cdp_html_shot::Browser;
-    use anyhow::Result;
-
-    #[tokio::main]
-    async fn main() -> Result<()> {
-        let browser = Browser::new().await?;
-        let tab = browser.new_tab().await?;
-        Ok(())
-    }
-    ```
-    */
     pub async fn new_tab(&self) -> Result<Tab> {
         Tab::new(self.transport.clone()).await
     }
 
-    /**
-    Close the initial tab created when the browser starts.
-
-    # Warning
-    Only in headless mode, otherwise it will close the entire browser.
-    */
+    /// Close the initial tab created when the browser starts.
     pub async fn close_init_tab(&self) -> Result<()> {
-        let TransportResponse::Response(res) = self.transport.send(json!({
-            "id": next_id(),
-            "method": "Target.getTargets",
-            "params": {}
-        })).await? else { panic!() };
+        let response = self
+            .transport
+            .send(json!({
+                "id": next_id(),
+                "method": "Target.getTargets",
+                "params": {}
+            }))
+            .await?;
 
-        let target_id = res
-            .result["targetInfos"]
-            .as_array()
-            .unwrap()
+        let TransportResponse::Response(res) = response else {
+            return Err(anyhow!("Unexpected response type when getting targets"));
+        };
+
+        let target_infos = res
+            .result
+            .get("targetInfos")
+            .and_then(|t| t.as_array())
+            .context("Invalid targetInfos format")?;
+
+        let target_id = target_infos
             .iter()
-            .find(|info| {
-                info["type"].as_str().unwrap() == "page"
-            }).unwrap()["targetId"]
-            .as_str()
-            .unwrap();
+            .find(|info| info.get("type").and_then(|t| t.as_str()) == Some("page"))
+            .and_then(|info| info.get("targetId"))
+            .and_then(|id| id.as_str())
+            .context("Could not find initial page target")?;
 
-        self.transport.send(json!({
-            "id": next_id(),
-            "method": "Target.closeTarget",
-            "params": {
-                "targetId": target_id
-            }
-        })).await?;
+        self.transport
+            .send(json!({
+                "id": next_id(),
+                "method": "Target.closeTarget",
+                "params": {
+                    "targetId": target_id
+                }
+            }))
+            .await?;
 
         Ok(())
     }
 
-    /**
-    Basic version: Capture a screenshot of an HTML element.
-
-    Returns the base64-encoded image data (JPEG format).
-
-    If you need more control over the capture process, use [`capture_html_with_options`].
-
-    # Arguments
-    - `html`: The HTML content
-    - `selector`: The CSS selector of the element to capture
-
-    [`capture_html_with_options`]: struct.Browser.html#method.capture_html_with_options
-
-    # Example
-    ```no_run
-    use cdp_html_shot::Browser;
-    use anyhow::Result;
-
-    #[tokio::main]
-    async fn main() -> Result<()> {
-        let browser = Browser::new().await?;
-        let base64 = browser.capture_html("<h1>Hello world!</h1>", "h1").await?;
-        Ok(())
-    }
-    ```
-    */
     pub async fn capture_html(&self, html: &str, selector: &str) -> Result<String> {
-        let tab = self.new_tab().await?;
-
-        tab.set_content(html).await?;
-
-        let element = tab.find_element(selector).await?;
-        let base64 = element.screenshot().await?;
-
-        tab.close().await?;
-        Ok(base64)
+        self.capture_html_with_options(html, selector, CaptureOptions::default())
+            .await
     }
 
-    /**
-    Advanced version: Capture a screenshot of an HTML element with additional options.
-
-    # Arguments
-    - `html`: The HTML content
-    - `selector`: The CSS selector of the element to capture
-    - `options`: Configuration options for the capture
-
-    # Example
-    ```no_run
-    use cdp_html_shot::{Browser, CaptureOptions};
-    use anyhow::Result;
-
-    #[tokio::main]
-    async fn main() -> Result<()> {
-        let browser = Browser::new().await?;
-        let options = CaptureOptions::new()
-            .with_raw_png(true);
-
-        let base64 = browser
-            .capture_html_with_options(
-                "<h1>Hello world!</h1>",
-                "h1",
-                options
-            ).await?;
-        Ok(())
-    }
-    ```
-    */
     pub async fn capture_html_with_options(
         &self,
         html: &str,
@@ -208,123 +122,95 @@ impl Browser {
     ) -> Result<String> {
         let tab = self.new_tab().await?;
 
-        tab.set_content(html).await?;
+        let result = async {
+            tab.set_content(html).await?;
+            let element = tab.find_element(selector).await?;
+            if options.raw_png {
+                element.raw_screenshot().await
+            } else {
+                element.screenshot().await
+            }
+        }
+        .await;
 
-        let element = tab.find_element(selector).await?;
+        if let Err(e) = tab.close().await {
+            warn!("Failed to close tab after capture: {:?}", e);
+        }
 
-        let base64 = if options.raw_png {
-            element.raw_screenshot().await?
-        } else {
-            element.screenshot().await?
-        };
-
-        tab.close().await?;
-
-        Ok(base64)
+        result
     }
 
     /**
     Close the browser.
-
-    This will kill the browser process and clean up temporary files.
-
-    Normally, this method does not need to be called manually,
-    because it will be called automatically when the `Browser` instance is destroyed.
-
-    # Example
-    ```no_run
-    use cdp_html_shot::Browser;
-    use anyhow::Result;
-
-    #[tokio::main]
-    async fn main() -> Result<()> {
-        let mut browser = Browser::new().await?;
-        browser.close()?;
-        Ok(())
-    }
-    ```
     */
-    pub fn close(&mut self) -> Result<()> {
-        if self.is_closed {
-            return Ok(());
+    pub fn close(&self) -> Result<()> {
+        // 1. Shutdown Transport
+        self.transport.shutdown();
+
+        // 2. Kill Process
+        let mut process_guard = self
+            .process
+            .lock()
+            .map_err(|_| anyhow!("Failed to lock browser process"))?;
+
+        if let Some(mut process) = process_guard.take() {
+            process
+                .child
+                .kill()
+                .context("Failed to kill browser process")?;
+            process
+                .child
+                .wait()
+                .context("Failed to wait for browser process exit")?;
         }
 
-        Arc::get_mut(&mut self.transport)
-            .unwrap()
-            .shutdown();
-
-        self.process.0
-            .kill()
-            .and_then(|_| self.process.0.wait())
-            .context("Failed to kill the browser process")?;
-
-        self.process.1
-            .cleanup()?;
-
-        self.is_closed = true;
         Ok(())
     }
 }
 
+// ==========================================
+// 单例模式实现
+// ==========================================
 impl Browser {
-    /**
-    Get the global Browser instance.
-
-    Creates a new one if it doesn't exist.
-
-    This method is thread-safe and ensures only one browser instance is created.
-
-    The browser will be automatically closed
-    when all references are dropped or when the program exits.
-
-    # Example
-    ```no_run
-    use cdp_html_shot::Browser;
-    use anyhow::Result;
-
-    #[tokio::main]
-    async fn main() -> Result<()> {
-        let browser = Browser::instance().await;
-        let tab = browser.new_tab().await?;
-
-        Browser::close_instance();
-        Ok(())
-    }
-    ```
-    */
+    /// Get the global Browser instance.
     pub async fn instance() -> Arc<Browser> {
-        unsafe {
-            let browser = BROWSER
-                .get_or_init(|| async {
-                    let browser = Browser::new().await.unwrap();
-                    browser.close_init_tab().await.unwrap();
-                    Arc::new(browser)
-                })
-                .await;
+        let mut lock = GLOBAL_BROWSER.lock().await;
 
-            browser.clone()
+        if let Some(browser) = &*lock {
+            return browser.clone();
         }
+
+        let browser = Browser::new()
+            .await
+            .expect("Failed to initialize global browser");
+
+        if let Err(e) = browser.close_init_tab().await {
+            warn!("Failed to close initial tab: {}", e);
+        }
+
+        let browser_arc = Arc::new(browser);
+        *lock = Some(browser_arc.clone());
+
+        browser_arc
     }
 
-    /**
-    Close the global Browser instance.
+    /// Close the global Browser instance.
+    pub async fn close_instance() -> Result<()> {
+        let mut lock = GLOBAL_BROWSER.lock().await;
 
-    Please ensure that this method is called before the program exits,
-    and there should be no Browser instances in use at this time.
-    */
-    pub fn close_instance() -> Option<()> {
-        unsafe {
-            Arc::get_mut(&mut BROWSER.take()?)?.close().ok()
+        if let Some(browser) = lock.take() {
+            browser.close()?;
         }
+        Ok(())
     }
 }
 
 impl Drop for Browser {
     fn drop(&mut self) {
-        if !self.is_closed {
-            if let Err(e) = self.close() {
-                error!("Error closing browser: {:?}", e);
-            }
+        if let Err(e) = self.close()
+            && !e.to_string().contains("Failed to lock")
+        {
+            warn!("Error closing browser in Drop: {:?}", e);
         }
     }
 }

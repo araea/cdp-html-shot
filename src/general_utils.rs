@@ -1,6 +1,6 @@
+use anyhow::{Result, anyhow};
+use serde_json::{Value, json};
 use std::sync::Arc;
-use anyhow::{anyhow, Result};
-use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::transport::Transport;
@@ -13,7 +13,8 @@ pub(crate) fn next_id() -> usize {
 }
 
 pub(crate) fn serde_msg(msg: &TargetMessage) -> Value {
-    let message: Value = serde_json::from_str(msg.params["message"].as_str().unwrap().trim_matches('"')).unwrap();
+    let message: Value =
+        serde_json::from_str(msg.params["message"].as_str().unwrap().trim_matches('"')).unwrap();
     message
 }
 
