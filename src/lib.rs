@@ -52,54 +52,66 @@ mod transport {
     use tokio::time;
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
-    /// Global atomic ID counter for generating unique message IDs.
+    /// Global counter for generating unique message IDs
     pub(crate) static GLOBAL_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-    /// Returns a unique incremental ID for request messages.
+    /// Generates the next unique message ID
     pub(crate) fn next_id() -> usize {
         GLOBAL_ID_COUNTER.fetch_add(1, Ordering::SeqCst) + 1
     }
 
-    /// Messages sent to the transport actor.
+    /// Messages that can be sent to the transport actor
     #[derive(Debug)]
     pub(crate) enum TransportMessage {
-        /// A request command with a response sender.
+        /// Send a CDP command and wait for response
         Request(Value, oneshot::Sender<Result<TransportResponse>>),
-        /// Listener for target messages with given ID.
+        /// Listen for a specific target message by ID
         ListenTargetMessage(u64, oneshot::Sender<Result<TransportResponse>>),
-        /// Command to shut down the transport.
+        /// Wait for a specific CDP event
+        WaitForEvent(String, String, oneshot::Sender<()>),
+        /// Shutdown the transport and browser
         Shutdown,
     }
 
-    /// Responses produced by the transport actor.
+    /// Responses received from the transport
     #[derive(Debug)]
     pub(crate) enum TransportResponse {
+        /// Direct response from CDP
         Response(Response),
+        /// Message from target session
         Target(TargetMessage),
     }
 
-    /// Represents a generic CDP response.
+    /// Standard CDP response format
     #[derive(Debug, Serialize, Deserialize)]
     pub(crate) struct Response {
+        /// Message ID matching the request
         pub(crate) id: u64,
+        /// Response data
         pub(crate) result: Value,
     }
 
-    /// Represents messages sent from targets (such as received target messages).
+    /// Message received from target session
     #[derive(Debug, Serialize, Deserialize)]
     pub(crate) struct TargetMessage {
+        /// Message parameters
         pub(crate) params: Value,
     }
 
-    /// Internal transport actor managing WebSocket communication and request-response handling.
+    /// Actor that manages WebSocket communication with Chrome DevTools Protocol
     struct TransportActor {
+        /// Pending requests waiting for responses
         pending_requests: HashMap<u64, oneshot::Sender<Result<TransportResponse>>>,
+        /// Event listeners waiting for specific CDP events
+        event_listeners: HashMap<(String, String), Vec<oneshot::Sender<()>>>,
+        /// WebSocket sink for sending messages
         ws_sink: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+        /// Channel for receiving commands
         command_rx: mpsc::Receiver<TransportMessage>,
     }
 
     impl TransportActor {
-        /// Event loop handling incoming/outgoing WebSocket messages and commands.
+        /// Main event loop for processing WebSocket messages and commands
         async fn run(
             mut self,
             mut ws_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
@@ -109,19 +121,34 @@ mod transport {
                     Some(msg) = ws_stream.next() => {
                         match msg {
                             Ok(Message::Text(text)) => {
+                                // Try to parse as regular Response
                                 if let Ok(response) = serde_json::from_str::<Response>(&text) {
                                     if let Some(sender) = self.pending_requests.remove(&response.id) {
                                         let _ = sender.send(Ok(TransportResponse::Response(response)));
                                     }
-                                } else if let Ok(target_msg) = serde_json::from_str::<TargetMessage>(&text) {
-                                    // Handle "Target.receivedMessageFromTarget" notifications.
-                                    if let Some(inner_str) = target_msg.params.get("message").and_then(|v| v.as_str())
-                                        && let Ok(inner_json) = serde_json::from_str::<Value>(inner_str)
-                                            && let Some(id) = inner_json.get("id").and_then(|i| i.as_u64())
-                                                && let Some(sender) = self.pending_requests.remove(&id) {
+                                }
+                                // Try to parse as TargetMessage (from Target.receivedMessageFromTarget)
+                                else if let Ok(target_msg) = serde_json::from_str::<TargetMessage>(&text)
+                                    && let Some(inner_str) = target_msg.params.get("message").and_then(|v| v.as_str())
+                                        && let Ok(inner_json) = serde_json::from_str::<Value>(inner_str) {
+
+                                            // Case A: This is a response to a request (has ID)
+                                            if let Some(id) = inner_json.get("id").and_then(|i| i.as_u64()) {
+                                                if let Some(sender) = self.pending_requests.remove(&id) {
                                                     let _ = sender.send(Ok(TransportResponse::Target(target_msg)));
                                                 }
-                                }
+                                            }
+                                            // Case B: This is an event (no ID, has Method) -> trigger listeners
+                                            else if let Some(method) = inner_json.get("method").and_then(|s| s.as_str())
+                                                && let Some(session_id) = target_msg.params.get("sessionId").and_then(|s| s.as_str()) {
+                                                    let key = (session_id.to_string(), method.to_string());
+                                                    if let Some(senders) = self.event_listeners.remove(&key) {
+                                                        for tx in senders {
+                                                            let _ = tx.send(());
+                                                        }
+                                                    }
+                                                }
+                                        }
                             }
                             Err(_) => break,
                             _ => {}
@@ -142,6 +169,10 @@ mod transport {
                             TransportMessage::ListenTargetMessage(id, tx) => {
                                 self.pending_requests.insert(id, tx);
                             },
+                            // Handle event listener registration
+                            TransportMessage::WaitForEvent(session_id, method, tx) => {
+                                self.event_listeners.entry((session_id, method)).or_default().push(tx);
+                            },
                             TransportMessage::Shutdown => {
                                 let _ = self.ws_sink.send(Message::Text(json!({
                                     "id": next_id(),
@@ -159,14 +190,15 @@ mod transport {
         }
     }
 
-    /// Asynchronous transport interface to the Chrome DevTools Protocol over WebSocket.
+    /// WebSocket transport for Chrome DevTools Protocol communication
     #[derive(Debug)]
     pub(crate) struct Transport {
+        /// Channel for sending commands to the transport actor
         tx: mpsc::Sender<TransportMessage>,
     }
 
     impl Transport {
-        /// Creates a new transport connected to the specified WebSocket URL.
+        /// Creates a new transport connection to the WebSocket URL
         pub(crate) async fn new(ws_url: &str) -> Result<Self> {
             let (ws_stream, _) = connect_async(ws_url).await?;
             let (ws_sink, ws_stream) = ws_stream.split();
@@ -175,6 +207,7 @@ mod transport {
             tokio::spawn(async move {
                 let actor = TransportActor {
                     pending_requests: HashMap::new(),
+                    event_listeners: HashMap::new(), // Initialize
                     ws_sink,
                     command_rx: rx,
                 };
@@ -184,33 +217,53 @@ mod transport {
             Ok(Self { tx })
         }
 
-        /// Sends a command and awaits its response.
+        /// Sends a CDP command and waits for the response
         pub(crate) async fn send(&self, command: Value) -> Result<TransportResponse> {
             let (tx, rx) = oneshot::channel();
             self.tx
                 .send(TransportMessage::Request(command, tx))
                 .await
                 .map_err(|_| anyhow!("Transport actor dropped"))?;
-            time::timeout(Duration::from_secs(10), rx)
+            time::timeout(Duration::from_secs(30), rx)
                 .await
                 .map_err(|_| anyhow!("Timeout waiting for response"))?
                 .map_err(|_| anyhow!("Response channel closed"))?
         }
 
-        /// Waits for a specific target message by ID.
+        /// Waits for a specific target message by ID
         pub(crate) async fn get_target_msg(&self, msg_id: usize) -> Result<TransportResponse> {
             let (tx, rx) = oneshot::channel();
             self.tx
                 .send(TransportMessage::ListenTargetMessage(msg_id as u64, tx))
                 .await
                 .map_err(|_| anyhow!("Transport actor dropped"))?;
-            time::timeout(Duration::from_secs(10), rx)
+            time::timeout(Duration::from_secs(30), rx)
                 .await
                 .map_err(|_| anyhow!("Timeout waiting for target message"))?
                 .map_err(|_| anyhow!("Response channel closed"))?
         }
 
-        /// Initiates a graceful shutdown of the transport.
+        /// Waits for a specific CDP event from a session
+        pub(crate) async fn wait_for_event(&self, session_id: &str, method: &str) -> Result<()> {
+            let (tx, rx) = oneshot::channel();
+            self.tx
+                .send(TransportMessage::WaitForEvent(
+                    session_id.to_string(),
+                    method.to_string(),
+                    tx,
+                ))
+                .await
+                .map_err(|_| anyhow!("Transport actor dropped"))?;
+
+            // Set 30 second timeout
+            time::timeout(Duration::from_secs(30), rx)
+                .await
+                .map_err(|_| anyhow!("Timeout waiting for event {}", method))?
+                .map_err(|_| anyhow!("Event channel closed"))?;
+            Ok(())
+        }
+
+        /// Shuts down the transport and browser
         pub(crate) async fn shutdown(&self) {
             let _ = self.tx.send(TransportMessage::Shutdown).await;
         }
@@ -416,21 +469,50 @@ mod tab {
             })
         }
 
-        /// Sets the tab's HTML content and waits until page stability.
-        pub async fn set_content(&self, content: &str) -> Result<&Self> {
-            let js_check = r#"
-            (async()=>{try{const b=30000,c=200,d=500,e=Date.now();await new Promise((f,g)=>{let h=null,i=null,j=Date.now();const k=()=>{i&&i.disconnect(),h&&clearTimeout(h),f(!0)},l=async()=>{if(Date.now()-e>b){return i&&i.disconnect(),void g(new Error("Timeout"))}if("complete"!==document.readyState)return setTimeout(l,100);await document.fonts.ready;const m=[...Array.from(document.querySelectorAll('link[rel="stylesheet"]')),...Array.from(document.images)].filter(n=>"LINK"===n.tagName?!n.sheet:"IMG"===n.tagName&&!n.complete);return m.length>0?setTimeout(l,100):void o()},o=()=>{if(!i){j=Date.now(),i=new MutationObserver(p=>{j=Date.now()}),i.observe(document.documentElement,{childList:!0,subtree:!0,attributes:!0,characterData:!0});const p=()=>{const q=Date.now(),r=q-e,s=q-j;return r>b?k():s>=c&&r>=d?void requestAnimationFrame(()=>{requestAnimationFrame(()=>{k()})}):void setTimeout(p,100)};p()}};document.open(),document.write(CONTENT_PLACEHOLDER),document.close(),l()});return"Page stable"}catch(t){throw new Error(t.message)}})();
-            "#.replace("CONTENT_PLACEHOLDER", &serde_json::to_string(content)?);
-
+        /// Helper function: sends a command to Target without waiting for specific msg_id response (fire and forget mode)
+        async fn send_cmd(&self, method: &str, params: serde_json::Value) -> Result<()> {
             let msg_id = next_id();
             let msg = json!({
                 "id": msg_id,
-                "method": "Runtime.evaluate",
-                "params": { "expression": js_check, "awaitPromise": true, "returnByValue": true }
+                "method": method,
+                "params": params
             })
             .to_string();
-
+            // Reuse send_and_get_msg from utils
             send_and_get_msg(self.transport.clone(), msg_id, &self.session_id, msg).await?;
+            Ok(())
+        }
+
+        /// Sets HTML content and waits for the "load" event.
+        pub async fn set_content(&self, content: &str) -> Result<&Self> {
+            // 1. Enable Page domain to ensure lifecycle events are sent
+            self.send_cmd("Page.enable", json!({})).await?;
+
+            // 2. Prepare to wait for `load` event
+            //    Must start listening before writing content to prevent the event from firing before we're ready
+            let load_event_future = self
+                .transport
+                .wait_for_event(&self.session_id, "Page.loadEventFired");
+
+            // 3. Execute document.write
+            //    Puppeteer logic: document.open() -> write() -> close()
+            let js_write = format!(
+                r#"document.open(); document.write({}); document.close();"#,
+                serde_json::to_string(content)?
+            );
+
+            self.send_cmd(
+                "Runtime.evaluate",
+                json!({
+                    "expression": js_write,
+                    "awaitPromise": true
+                }),
+            )
+            .await?;
+
+            // 4. Wait for the event to trigger
+            load_event_future.await?;
+
             Ok(self)
         }
 
@@ -781,7 +863,7 @@ mod exit_hook {
         pub fn register(&self) -> Result<(), Box<dyn std::error::Error>> {
             static ONCE: Once = Once::new();
             let f = self.func.clone();
-            let mut res = Ok(());
+            let res = Ok(());
             ONCE.call_once(|| {
                 if let Err(e) = ctrlc::set_handler(move || {
                     f();
