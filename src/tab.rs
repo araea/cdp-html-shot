@@ -79,160 +79,142 @@ impl Tab {
     Set the content of the tab and wait for:
     1. Resources to load (Images, Fonts, CSS).
     2. JavaScript to finish executing (DOM stability check).
-
-    # Example
-    ```no_run
-    use cdp_html_shot::Browser;
-    use anyhow::Result;
-
-    #[tokio::main]
-    async fn main() -> Result<()> {
-        let browser = Browser::new().await?;
-        let tab = browser.new_tab().await?;
-
-        // This will wait for the page to become completely "stable" before returning
-        tab.set_content(complex_html_content).await?;
-
-        Ok(())
-    }
-    ```
+    3. A minimum "warm-up" period to allow inline scripts to start rendering.
     */
     pub async fn set_content(&self, content: &str) -> Result<&Self> {
-        let content = match (content.contains('`'), content.contains("${")) {
-            (true, true) => &content.replace('`', "${BACKTICK}").replace("${", "$ {"),
-            (true, false) => &content.replace('`', "${BACKTICK}"),
-            (false, true) => &content.replace("${", "$ {"),
-            (false, false) => content,
-        };
+        let content_json = serde_json::to_string(content)?;
 
         let expression = format!(
-            r#"
-        (async () => {{
-            try {{
-                const BACKTICK = '`';
+            r###"
+            (async () => {{
+                try {{
+                    // === 配置项 ===
+                    const TOTAL_TIMEOUT = 30000;     // 总超时时间 (30s)
+                    const STABILITY_THRESHOLD = 200; // 判定静止的阈值
+                    const MIN_RENDER_TIME = 500;     // 最小渲染时间：防止页面加载过快，JS还没开始执行就结束了
+                    // ============
 
-                // 1. 注入内容
-                document.open();
-                document.write(String.raw`{content}`);
-                document.close();
+                    const startTime = Date.now();
 
-                // === 配置项 ===
-                const TOTAL_TIMEOUT = 15000;
-                const STABILITY_THRESHOLD = 200;
-                // ============
-
-                const startTime = Date.now();
-
-                await new Promise((resolve, reject) => {{
-                    let stabilityTimer = null;
-                    let observer = null;
-
-                    // 结束函数：清理并返回
-                    const finish = () => {{
-                        if (observer) observer.disconnect();
-                        if (stabilityTimer) clearTimeout(stabilityTimer);
-                        resolve(true);
-                    }};
-
-                    // 资源加载检查器
-                    const checkResources = async () => {{
-                        // 超时检查
-                        if (Date.now() - startTime > TOTAL_TIMEOUT) {{
-                            if (observer) observer.disconnect();
-                            reject(new Error('Timeout waiting for page stability'));
-                            return;
-                        }}
-
-                        // A. 等待基础状态 complete (确保 defer 脚本已运行)
-                        if (document.readyState !== 'complete') {{
-                            setTimeout(checkResources, 100);
-                            return;
-                        }}
-
-                        // B. 等待字体加载
-                        await document.fonts.ready;
-
-                        // C. 检查关键资源 (CSS 和 图片)
-                        const resources = [
-                            ...Array.from(document.querySelectorAll('link[rel="stylesheet"]')),
-                            ...Array.from(document.images)
-                        ];
-
-                        const pending = resources.filter(el => {{
-                            if (el.tagName === 'LINK') return !el.sheet;
-                            if (el.tagName === 'IMG') return !el.complete;
-                            return false;
-                        }});
-
-                        if (pending.length > 0) {{
-                            // 还有资源没加载完，给它们绑定事件并继续轮询
-                            // 这里不做 await，而是通过轮询来检查状态，因为 onload 可能漏掉
-                            setTimeout(checkResources, 100);
-                            return;
-                        }}
-
-                        // === 资源加载完毕，开始 DOM 稳定性检查 ===
-                        startStabilityCheck();
-                    }};
-
-                    // DOM 稳定性检查器
-                    const startStabilityCheck = () => {{
-                        // 如果已经启动过观察者，就不重复启动
-                        if (observer) return;
-
+                    await new Promise((resolve, reject) => {{
+                        let stabilityTimer = null;
+                        let observer = null;
                         let lastMutationTime = Date.now();
 
-                        // 创建观察者：只要 DOM 变动，就更新最后变动时间
-                        observer = new MutationObserver((mutations) => {{
-                            lastMutationTime = Date.now();
-                            // 可以在这里 console.log('DOM changed by JS...');
-                        }});
+                        // 结束函数：清理并返回
+                        const finish = () => {{
+                            if (observer) observer.disconnect();
+                            if (stabilityTimer) clearTimeout(stabilityTimer);
+                            resolve(true);
+                        }};
 
-                        // 监听子节点变化、属性变化、文本内容变化
-                        observer.observe(document.body, {{
-                            childList: true,
-                            subtree: true,
-                            attributes: true,
-                            characterData: true
-                        }});
-
-                        // 轮询检查是否“静止”了足够长的时间
-                        const checkStabilityLoop = () => {{
-                            const now = Date.now();
-
-                            // 总超时保护
-                            if (now - startTime > TOTAL_TIMEOUT) {{
-                                finish(); // 即使不稳定也强制结束，避免死循环
+                        // 资源加载检查器
+                        const checkResources = async () => {{
+                            // 超时检查
+                            if (Date.now() - startTime > TOTAL_TIMEOUT) {{
+                                if (observer) observer.disconnect();
+                                reject(new Error('Timeout waiting for page stability'));
                                 return;
                             }}
 
-                            // 如果距离上次变动已经超过了阈值 (例如 500ms)
-                            if (now - lastMutationTime >= STABILITY_THRESHOLD) {{
-                                // 双重 requestAnimationFrame 确保渲染管道已清空
-                                requestAnimationFrame(() => {{
-                                    requestAnimationFrame(() => {{
-                                        finish();
-                                    }});
-                                }});
-                            }} else {{
-                                // 还没静止，继续等
-                                setTimeout(checkStabilityLoop, 100);
+                            // A. 等待基础状态 complete
+                            if (document.readyState !== 'complete') {{
+                                setTimeout(checkResources, 100);
+                                return;
                             }}
+
+                            // B. 等待字体加载
+                            await document.fonts.ready;
+
+                            // C. 检查关键资源 (CSS 和 图片)
+                            // 注意：document.write 后需要确保能获取到元素
+                            const resources = [
+                                ...Array.from(document.querySelectorAll('link[rel="stylesheet"]')),
+                                ...Array.from(document.images)
+                            ];
+
+                            const pending = resources.filter(el => {{
+                                if (el.tagName === 'LINK') return !el.sheet;
+                                if (el.tagName === 'IMG') return !el.complete;
+                                return false;
+                            }});
+
+                            if (pending.length > 0) {{
+                                setTimeout(checkResources, 100);
+                                return;
+                            }}
+
+                            // === 资源加载完毕，开始 DOM 稳定性检查 ===
+                            startStabilityCheck();
                         }};
 
-                        checkStabilityLoop();
-                    }};
+                        // DOM 稳定性检查器
+                        const startStabilityCheck = () => {{
+                            if (observer) return;
 
-                    // 启动流程
-                    checkResources();
-                }});
+                            // 重置最后变动时间为当前，确保观察器启动后的时间窗口有效
+                            lastMutationTime = Date.now();
 
-                return 'Page fully stable';
-            }} catch (error) {{
-                throw new Error(`Failed to set content: ${{error.message}}`);
-            }}
-        }})();
-        "#
+                            observer = new MutationObserver((mutations) => {{
+                                lastMutationTime = Date.now();
+                            }});
+
+                            // 监听范围扩大到 document.documentElement 以防挂载点在 body 之外
+                            observer.observe(document.documentElement, {{
+                                childList: true,
+                                subtree: true,
+                                attributes: true,
+                                characterData: true
+                            }});
+
+                            // 轮询检查
+                            const checkStabilityLoop = () => {{
+                                const now = Date.now();
+                                const elapsed = now - startTime;        // 总耗时
+                                const quietTime = now - lastMutationTime; // 静止时长
+
+                                // 总超时保护
+                                if (elapsed > TOTAL_TIMEOUT) {{
+                                    finish();
+                                    return;
+                                }}
+
+                                // 只有同时满足以下两点才算结束：
+                                if (quietTime >= STABILITY_THRESHOLD && elapsed >= MIN_RENDER_TIME) {{
+                                    // 双重 requestAnimationFrame 确保渲染管道已清空
+                                    requestAnimationFrame(() => {{
+                                        requestAnimationFrame(() => {{
+                                            finish();
+                                        }});
+                                    }});
+                                }} else {{
+                                    // 还没静止 或 还没达到最小运行时间，继续等
+                                    setTimeout(checkStabilityLoop, 100);
+                                }}
+                            }};
+
+                            checkStabilityLoop();
+                        }};
+
+                        // --- 注入内容开始 ---
+                        // 直接使用 JSON 转换后的字符串，不需要 String.raw
+                        const htmlContent = {content_json};
+
+                        document.open();
+                        document.write(htmlContent);
+                        document.close(); // 必须 close，否则 readyState 可能卡住
+
+                        // 启动流程
+                        checkResources();
+                    }});
+
+                    return 'Page fully stable';
+                }} catch (error) {{
+                    throw new Error(`Failed to set content: ${{error.message}}`);
+                }}
+            }})();
+            "###,
+            content_json = content_json
         );
 
         let msg_id = next_id();
