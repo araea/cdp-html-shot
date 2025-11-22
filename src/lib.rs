@@ -115,15 +115,12 @@ mod transport {
                                     }
                                 } else if let Ok(target_msg) = serde_json::from_str::<TargetMessage>(&text) {
                                     // Handle "Target.receivedMessageFromTarget" notifications.
-                                    if let Some(inner_str) = target_msg.params.get("message").and_then(|v| v.as_str()) {
-                                        if let Ok(inner_json) = serde_json::from_str::<Value>(inner_str) {
-                                            if let Some(id) = inner_json.get("id").and_then(|i| i.as_u64()) {
-                                                if let Some(sender) = self.pending_requests.remove(&id) {
+                                    if let Some(inner_str) = target_msg.params.get("message").and_then(|v| v.as_str())
+                                        && let Ok(inner_json) = serde_json::from_str::<Value>(inner_str)
+                                            && let Some(id) = inner_json.get("id").and_then(|i| i.as_u64())
+                                                && let Some(sender) = self.pending_requests.remove(&id) {
                                                     let _ = sender.send(Ok(TransportResponse::Target(target_msg)));
                                                 }
-                                            }
-                                        }
-                                    }
                                 }
                             }
                             Err(_) => break,
@@ -133,15 +130,14 @@ mod transport {
                     Some(msg) = self.command_rx.recv() => {
                         match msg {
                             TransportMessage::Request(cmd, tx) => {
-                                if let Some(id) = cmd["id"].as_u64() {
-                                    if let Ok(text) = serde_json::to_string(&cmd) {
+                                if let Some(id) = cmd["id"].as_u64()
+                                    && let Ok(text) = serde_json::to_string(&cmd) {
                                         if self.ws_sink.send(Message::Text(text)).await.is_ok() {
                                             self.pending_requests.insert(id, tx);
                                         } else {
                                             let _ = tx.send(Err(anyhow!("WebSocket send failed")));
                                         }
                                     }
-                                }
                             },
                             TransportMessage::ListenTargetMessage(id, tx) => {
                                 self.pending_requests.insert(id, tx);
@@ -661,10 +657,10 @@ mod browser {
                     r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe",
                 ];
                 for k in keys {
-                    if let Ok(rk) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(k) {
-                        if let Ok(v) = rk.get_value::<String, _>("") {
-                            return Ok(v.into());
-                        }
+                    if let Ok(rk) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(k)
+                        && let Ok(v) = rk.get_value::<String, _>("")
+                    {
+                        return Ok(v.into());
                     }
                 }
                 let paths = [
@@ -749,16 +745,13 @@ mod browser {
                 .transport
                 .send(json!({"id": next_id(), "method":"Target.getTargets", "params":{}}))
                 .await
+                && let Some(list) = res.result["targetInfos"].as_array()
+                && let Some(id) = list
+                    .iter()
+                    .find(|t| t["type"] == "page")
+                    .and_then(|t| t["targetId"].as_str())
             {
-                if let Some(list) = res.result["targetInfos"].as_array() {
-                    if let Some(id) = list
-                        .iter()
-                        .find(|t| t["type"] == "page")
-                        .and_then(|t| t["targetId"].as_str())
-                    {
-                        let _ = b.transport.send(json!({"id":next_id(), "method":"Target.closeTarget", "params":{"targetId":id}})).await;
-                    }
-                }
+                let _ = b.transport.send(json!({"id":next_id(), "method":"Target.closeTarget", "params":{"targetId":id}})).await;
             }
             *lock = Some(b.clone());
             b
