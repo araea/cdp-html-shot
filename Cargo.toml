@@ -1,6 +1,6 @@
 [package]
 name = "cdp-html-shot"
-version = "0.1.27"
+version = "0.1.28"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Nawyjx <3373167460@qq.com>"]
@@ -45,7 +45,7 @@ tempfile = "3.14.0"
 futures-util = "0.3.31"
 tokio-tungstenite = "0.24.0"
 serde = { version = "1.0", features = ["derive"] }
-tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["full"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52.0"
