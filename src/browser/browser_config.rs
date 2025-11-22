@@ -9,9 +9,9 @@ use winreg::{RegKey, enums::HKEY_LOCAL_MACHINE};
 
 use crate::browser::temp_dir::CustomTempDir;
 
-static DEFAULT_ARGS: [&str; 29] = [
+static DEFAULT_ARGS: [&str; 28] = [
     // === 核心模式 (必须用 new 才能保证渲染正确) ===
-    "--headless=new",
+    // "--headless=new",
     // === 进程与内存优化 (针对低配) ===
     "--no-sandbox",                        // 减少进程开销 (Docker/Root 下必须)
     "--no-zygote",                         // 禁用 Zygote 进程，节省内存
