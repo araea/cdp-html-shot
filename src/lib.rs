@@ -16,10 +16,251 @@ pub use element::Element;
 pub use exit_hook::ExitHook;
 pub use tab::Tab;
 
+/// Viewport configuration for controlling page dimensions and device emulation.
+///
+/// Similar to Puppeteer's `page.setViewport()`, this allows you to control
+/// the page dimensions and device scale factor for higher quality screenshots.
+///
+/// # Example
+/// ```rust,ignore
+/// use cdp_html_shot::Viewport;
+///
+/// // Create a high-DPI viewport for sharper images
+/// let viewport = Viewport::new(1920, 1080)
+///     .with_device_scale_factor(2.0);
+///
+/// // Or use builder pattern for full control
+/// let viewport = Viewport::builder()
+///     .width(1280)
+///     .height(720)
+///     .device_scale_factor(3.0)
+///     .is_mobile(false)
+///     .build();
+/// ```
+#[derive(Debug, Clone)]
+pub struct Viewport {
+    /// Viewport width in pixels.
+    pub width: u32,
+    /// Viewport height in pixels.
+    pub height: u32,
+    /// Device scale factor (DPR). Higher values (e.g., 2.0, 3.0) produce sharper images.
+    /// Default is 1.0.
+    pub device_scale_factor: f64,
+    /// Whether to emulate a mobile device. Default is false.
+    pub is_mobile: bool,
+    /// Whether touch events are supported. Default is false.
+    pub has_touch: bool,
+    /// Whether viewport is in landscape mode. Default is false.
+    pub is_landscape: bool,
+}
+
+impl Default for Viewport {
+    fn default() -> Self {
+        Self {
+            width: 800,
+            height: 600,
+            device_scale_factor: 1.0,
+            is_mobile: false,
+            has_touch: false,
+            is_landscape: false,
+        }
+    }
+}
+
+impl Viewport {
+    /// Creates a new viewport with specified dimensions and default settings.
+    pub fn new(width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+            ..Default::default()
+        }
+    }
+
+    /// Creates a new viewport builder for fluent configuration.
+    pub fn builder() -> ViewportBuilder {
+        ViewportBuilder::default()
+    }
+
+    /// Sets the device scale factor (DPR) for higher quality images.
+    ///
+    /// Common values:
+    /// - 1.0: Standard resolution
+    /// - 2.0: Retina/HiDPI (2x sharper)
+    /// - 3.0: Ultra-high DPI (3x sharper)
+    pub fn with_device_scale_factor(mut self, factor: f64) -> Self {
+        self.device_scale_factor = factor;
+        self
+    }
+
+    /// Sets whether to emulate a mobile device.
+    pub fn with_mobile(mut self, is_mobile: bool) -> Self {
+        self.is_mobile = is_mobile;
+        self
+    }
+
+    /// Sets whether touch events are supported.
+    pub fn with_touch(mut self, has_touch: bool) -> Self {
+        self.has_touch = has_touch;
+        self
+    }
+
+    /// Sets whether the viewport is in landscape mode.
+    pub fn with_landscape(mut self, is_landscape: bool) -> Self {
+        self.is_landscape = is_landscape;
+        self
+    }
+}
+
+/// Builder for creating Viewport configurations with a fluent API.
+#[derive(Debug, Clone, Default)]
+pub struct ViewportBuilder {
+    width: Option<u32>,
+    height: Option<u32>,
+    device_scale_factor: Option<f64>,
+    is_mobile: Option<bool>,
+    has_touch: Option<bool>,
+    is_landscape: Option<bool>,
+}
+
+impl ViewportBuilder {
+    /// Sets the viewport width in pixels.
+    pub fn width(mut self, width: u32) -> Self {
+        self.width = Some(width);
+        self
+    }
+
+    /// Sets the viewport height in pixels.
+    pub fn height(mut self, height: u32) -> Self {
+        self.height = Some(height);
+        self
+    }
+
+    /// Sets the device scale factor (DPR).
+    pub fn device_scale_factor(mut self, factor: f64) -> Self {
+        self.device_scale_factor = Some(factor);
+        self
+    }
+
+    /// Sets whether to emulate a mobile device.
+    pub fn is_mobile(mut self, mobile: bool) -> Self {
+        self.is_mobile = Some(mobile);
+        self
+    }
+
+    /// Sets whether touch events are supported.
+    pub fn has_touch(mut self, touch: bool) -> Self {
+        self.has_touch = Some(touch);
+        self
+    }
+
+    /// Sets whether viewport is in landscape mode.
+    pub fn is_landscape(mut self, landscape: bool) -> Self {
+        self.is_landscape = Some(landscape);
+        self
+    }
+
+    /// Builds the Viewport with configured or default values.
+    pub fn build(self) -> Viewport {
+        let default = Viewport::default();
+        Viewport {
+            width: self.width.unwrap_or(default.width),
+            height: self.height.unwrap_or(default.height),
+            device_scale_factor: self
+                .device_scale_factor
+                .unwrap_or(default.device_scale_factor),
+            is_mobile: self.is_mobile.unwrap_or(default.is_mobile),
+            has_touch: self.has_touch.unwrap_or(default.has_touch),
+            is_landscape: self.is_landscape.unwrap_or(default.is_landscape),
+        }
+    }
+}
+
+/// Screenshot format options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImageFormat {
+    /// JPEG format (smaller file size, lossy compression).
+    #[default]
+    Jpeg,
+    /// PNG format (lossless, supports transparency).
+    Png,
+    /// WebP format (modern format with good compression).
+    WebP,
+}
+
+impl ImageFormat {
+    /// Returns the format string used by CDP.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ImageFormat::Jpeg => "jpeg",
+            ImageFormat::Png => "png",
+            ImageFormat::WebP => "webp",
+        }
+    }
+}
+
 /// Configuration options for HTML screenshot capture.
+///
+/// Provides fine-grained control over the screenshot capture process,
+/// including image format, quality, viewport settings, and more.
+///
+/// # Example
+/// ```rust,ignore
+/// use cdp_html_shot::{CaptureOptions, Viewport, ImageFormat};
+///
+/// let options = CaptureOptions::new()
+///     .with_format(ImageFormat::Png)
+///     .with_viewport(Viewport::new(1920, 1080).with_device_scale_factor(2.0))
+///     .with_full_page(true);
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct CaptureOptions {
-    pub(crate) raw_png: bool,
+    /// Image format for the screenshot.
+    pub(crate) format: ImageFormat,
+    /// Quality for JPEG/WebP (0-100). Ignored for PNG.
+    pub(crate) quality: Option<u8>,
+    /// Viewport settings to apply before capture.
+    pub(crate) viewport: Option<Viewport>,
+    /// Whether to capture the full scrollable page.
+    pub(crate) full_page: bool,
+    /// Whether to omit the background (transparent for PNG).
+    pub(crate) omit_background: bool,
+    /// Optional clip region for the screenshot.
+    pub(crate) clip: Option<ClipRegion>,
+}
+
+/// Defines a rectangular region for clipping screenshots.
+#[derive(Debug, Clone, Copy)]
+pub struct ClipRegion {
+    /// X coordinate of the clip region.
+    pub x: f64,
+    /// Y coordinate of the clip region.
+    pub y: f64,
+    /// Width of the clip region.
+    pub width: f64,
+    /// Height of the clip region.
+    pub height: f64,
+    /// Scale factor for the clip region.
+    pub scale: f64,
+}
+
+impl ClipRegion {
+    /// Creates a new clip region with the specified dimensions.
+    pub fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+            scale: 1.0,
+        }
+    }
+
+    /// Sets the scale factor for the clip region.
+    pub fn with_scale(mut self, scale: f64) -> Self {
+        self.scale = scale;
+        self
+    }
 }
 
 impl CaptureOptions {
@@ -28,9 +269,74 @@ impl CaptureOptions {
         Self::default()
     }
 
+    /// Sets the image format for the screenshot.
+    pub fn with_format(mut self, format: ImageFormat) -> Self {
+        self.format = format;
+        self
+    }
+
+    /// Sets the quality for JPEG/WebP (0-100). Ignored for PNG.
+    pub fn with_quality(mut self, quality: u8) -> Self {
+        self.quality = Some(quality.min(100));
+        self
+    }
+
+    /// Sets the viewport configuration for the capture.
+    ///
+    /// This is particularly useful for setting `deviceScaleFactor` to get
+    /// higher resolution screenshots.
+    pub fn with_viewport(mut self, viewport: Viewport) -> Self {
+        self.viewport = Some(viewport);
+        self
+    }
+
+    /// Sets whether to capture the full scrollable page.
+    pub fn with_full_page(mut self, full_page: bool) -> Self {
+        self.full_page = full_page;
+        self
+    }
+
+    /// Sets whether to omit the background (transparent for PNG).
+    pub fn with_omit_background(mut self, omit: bool) -> Self {
+        self.omit_background = omit;
+        self
+    }
+
+    /// Sets a clip region for the screenshot.
+    pub fn with_clip(mut self, clip: ClipRegion) -> Self {
+        self.clip = Some(clip);
+        self
+    }
+
+    /// Convenience method: creates options for raw PNG output.
+    pub fn raw_png() -> Self {
+        Self::new().with_format(ImageFormat::Png)
+    }
+
+    /// Convenience method: creates options for high-quality JPEG.
+    pub fn high_quality_jpeg() -> Self {
+        Self::new().with_format(ImageFormat::Jpeg).with_quality(95)
+    }
+
+    /// Convenience method: creates options for HiDPI (2x) screenshots.
+    pub fn hidpi() -> Self {
+        Self::new().with_viewport(Viewport::default().with_device_scale_factor(2.0))
+    }
+
+    /// Convenience method: creates options for ultra HiDPI (3x) screenshots.
+    pub fn ultra_hidpi() -> Self {
+        Self::new().with_viewport(Viewport::default().with_device_scale_factor(3.0))
+    }
+
+    // Legacy compatibility method
     /// Specifies whether to capture screenshots as raw PNG (`true`) or JPEG (`false`).
+    #[deprecated(since = "0.2.0", note = "Use `with_format()` instead")]
     pub fn with_raw_png(mut self, raw: bool) -> Self {
-        self.raw_png = raw;
+        self.format = if raw {
+            ImageFormat::Png
+        } else {
+            ImageFormat::Jpeg
+        };
         self
     }
 }
@@ -207,7 +513,7 @@ mod transport {
             tokio::spawn(async move {
                 let actor = TransportActor {
                     pending_requests: HashMap::new(),
-                    event_listeners: HashMap::new(), // Initialize
+                    event_listeners: HashMap::new(),
                     ws_sink,
                     command_rx: rx,
                 };
@@ -255,7 +561,6 @@ mod transport {
                 .await
                 .map_err(|_| anyhow!("Transport actor dropped"))?;
 
-            // Set 30 second timeout
             time::timeout(Duration::from_secs(30), rx)
                 .await
                 .map_err(|_| anyhow!("Timeout waiting for event {}", method))?
@@ -317,6 +622,7 @@ mod element {
     use crate::tab::Tab;
     use crate::transport::next_id;
     use crate::utils::{self, send_and_get_msg};
+    use crate::{CaptureOptions, ImageFormat};
     use anyhow::{Context, Result};
     use serde_json::json;
 
@@ -350,18 +656,35 @@ mod element {
             })
         }
 
-        /// Captures a JPEG screenshot of the element.
+        /// Captures a JPEG screenshot of the element with default quality.
         pub async fn screenshot(&self) -> Result<String> {
-            self.take_screenshot("jpeg", Some(90)).await
+            self.screenshot_with_options(CaptureOptions::new().with_quality(90))
+                .await
         }
 
         /// Captures a raw PNG screenshot of the element.
         pub async fn raw_screenshot(&self) -> Result<String> {
-            self.take_screenshot("png", None).await
+            self.screenshot_with_options(CaptureOptions::raw_png())
+                .await
         }
 
-        /// Internal function to capture a screenshot with specified format and quality.
-        async fn take_screenshot(&self, format: &str, quality: Option<u8>) -> Result<String> {
+        /// Captures a screenshot of the element with custom options.
+        ///
+        /// # Example
+        /// ```rust,ignore
+        /// let options = CaptureOptions::new()
+        ///     .with_format(ImageFormat::Png)
+        ///     .with_viewport(Viewport::new(1920, 1080).with_device_scale_factor(2.0));
+        ///
+        /// let base64_image = element.screenshot_with_options(options).await?;
+        /// ```
+        pub async fn screenshot_with_options(&self, opts: CaptureOptions) -> Result<String> {
+            // Apply viewport if specified
+            if let Some(ref viewport) = opts.viewport {
+                self.parent.set_viewport(viewport).await?;
+            }
+
+            // Get element bounding box
             let msg_id = next_id();
             let msg_box = json!({
                 "id": msg_id,
@@ -387,14 +710,36 @@ mod element {
                 (border[5].as_f64().unwrap_or(0.0) - border[1].as_f64().unwrap_or(0.0)),
             );
 
+            // Build screenshot params
             let mut params = json!({
-                "format": format,
+                "format": opts.format.as_str(),
                 "clip": { "x": x, "y": y, "width": w, "height": h, "scale": 1.0 },
                 "fromSurface": true,
-                "captureBeyondViewport": true,
+                "captureBeyondViewport": opts.full_page,
             });
-            if let Some(q) = quality {
-                params["quality"] = json!(q);
+
+            // Add quality for JPEG/WebP
+            if matches!(opts.format, ImageFormat::Jpeg | ImageFormat::WebP) {
+                params["quality"] = json!(opts.quality.unwrap_or(90));
+            }
+
+            // Handle transparent background for PNG
+            if opts.omit_background && matches!(opts.format, ImageFormat::Png) {
+                // Enable transparent background
+                let msg_id = next_id();
+                let msg = json!({
+                    "id": msg_id,
+                    "method": "Emulation.setDefaultBackgroundColorOverride",
+                    "params": { "color": { "r": 0, "g": 0, "b": 0, "a": 0 } }
+                })
+                .to_string();
+                send_and_get_msg(
+                    self.parent.transport.clone(),
+                    msg_id,
+                    &self.parent.session_id,
+                    msg,
+                )
+                .await?;
             }
 
             let msg_id = next_id();
@@ -415,10 +760,33 @@ mod element {
             .await?;
             let data_cap = utils::serde_msg(&res_cap)?;
 
+            // Reset background color override if we changed it
+            if opts.omit_background && matches!(opts.format, ImageFormat::Png) {
+                let msg_id = next_id();
+                let msg = json!({
+                    "id": msg_id,
+                    "method": "Emulation.setDefaultBackgroundColorOverride",
+                    "params": {}
+                })
+                .to_string();
+                let _ = send_and_get_msg(
+                    self.parent.transport.clone(),
+                    msg_id,
+                    &self.parent.session_id,
+                    msg,
+                )
+                .await;
+            }
+
             data_cap["result"]["data"]
                 .as_str()
                 .map(|s| s.to_string())
                 .context("No image data received")
+        }
+
+        /// Returns the backend node ID of this element.
+        pub fn backend_node_id(&self) -> u64 {
+            self.backend_node_id
         }
     }
 }
@@ -430,8 +798,9 @@ mod tab {
     use crate::element::Element;
     use crate::transport::{Transport, TransportResponse, next_id};
     use crate::utils::{self, send_and_get_msg};
+    use crate::{CaptureOptions, ImageFormat, Viewport};
     use anyhow::{Context, Result, anyhow};
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::sync::Arc;
 
     /// Represents a CDP browser tab (target) session.
@@ -469,8 +838,12 @@ mod tab {
             })
         }
 
-        /// Helper function: sends a command to Target without waiting for specific msg_id response (fire and forget mode)
-        async fn send_cmd(&self, method: &str, params: serde_json::Value) -> Result<()> {
+        /// Helper function: sends a command to Target and waits for response.
+        pub(crate) async fn send_cmd(
+            &self,
+            method: &str,
+            params: serde_json::Value,
+        ) -> Result<Value> {
             let msg_id = next_id();
             let msg = json!({
                 "id": msg_id,
@@ -478,9 +851,62 @@ mod tab {
                 "params": params
             })
             .to_string();
-            // Reuse send_and_get_msg from utils
-            send_and_get_msg(self.transport.clone(), msg_id, &self.session_id, msg).await?;
-            Ok(())
+            let res =
+                send_and_get_msg(self.transport.clone(), msg_id, &self.session_id, msg).await?;
+            utils::serde_msg(&res)
+        }
+
+        /// Sets the viewport size and device scale factor.
+        ///
+        /// This is similar to Puppeteer's `page.setViewport()` and is essential
+        /// for getting higher resolution screenshots via `deviceScaleFactor`.
+        ///
+        /// # Example
+        /// ```rust,ignore
+        /// let viewport = Viewport::new(1920, 1080)
+        ///     .with_device_scale_factor(2.0);  // 2x resolution for sharper images
+        ///
+        /// tab.set_viewport(&viewport).await?;
+        /// ```
+        pub async fn set_viewport(&self, viewport: &Viewport) -> Result<&Self> {
+            let screen_orientation = if viewport.is_landscape {
+                json!({"type": "landscapePrimary", "angle": 90})
+            } else {
+                json!({"type": "portraitPrimary", "angle": 0})
+            };
+
+            self.send_cmd(
+                "Emulation.setDeviceMetricsOverride",
+                json!({
+                    "width": viewport.width,
+                    "height": viewport.height,
+                    "deviceScaleFactor": viewport.device_scale_factor,
+                    "mobile": viewport.is_mobile,
+                    "screenOrientation": screen_orientation
+                }),
+            )
+            .await?;
+
+            // Set touch emulation if needed
+            if viewport.has_touch {
+                self.send_cmd(
+                    "Emulation.setTouchEmulationEnabled",
+                    json!({
+                        "enabled": true,
+                        "maxTouchPoints": 5
+                    }),
+                )
+                .await?;
+            }
+
+            Ok(self)
+        }
+
+        /// Clears the viewport override, returning to default browser behavior.
+        pub async fn clear_viewport(&self) -> Result<&Self> {
+            self.send_cmd("Emulation.clearDeviceMetricsOverride", json!({}))
+                .await?;
+            Ok(self)
         }
 
         /// Sets HTML content and waits for the "load" event.
@@ -489,13 +915,11 @@ mod tab {
             self.send_cmd("Page.enable", json!({})).await?;
 
             // 2. Prepare to wait for `load` event
-            //    Must start listening before writing content to prevent the event from firing before we're ready
             let load_event_future = self
                 .transport
                 .wait_for_event(&self.session_id, "Page.loadEventFired");
 
             // 3. Execute document.write
-            //    Puppeteer logic: document.open() -> write() -> close()
             let js_write = format!(
                 r#"document.open(); document.write({}); document.close();"#,
                 serde_json::to_string(content)?
@@ -514,6 +938,37 @@ mod tab {
             load_event_future.await?;
 
             Ok(self)
+        }
+
+        /// Evaluates JavaScript in the page context and returns the result.
+        ///
+        /// # Example
+        /// ```rust,ignore
+        /// let result = tab.evaluate("document.title").await?;
+        /// println!("Page title: {}", result);
+        /// ```
+        pub async fn evaluate(&self, expression: &str) -> Result<Value> {
+            let result = self
+                .send_cmd(
+                    "Runtime.evaluate",
+                    json!({
+                        "expression": expression,
+                        "returnByValue": true,
+                        "awaitPromise": true
+                    }),
+                )
+                .await?;
+            Ok(result["result"]["result"]["value"].clone())
+        }
+
+        /// Evaluates JavaScript and returns the result as a string.
+        pub async fn evaluate_as_string(&self, expression: &str) -> Result<String> {
+            let value = self.evaluate(expression).await?;
+            value
+                .as_str()
+                .map(|s| s.to_string())
+                .or_else(|| Some(value.to_string()))
+                .context("Failed to convert result to string")
         }
 
         /// Finds the first element matching the given CSS selector.
@@ -545,6 +1000,90 @@ mod tab {
             Element::new(self, node_id).await
         }
 
+        /// Waits for an element matching the selector to appear in the DOM.
+        ///
+        /// # Arguments
+        /// * `selector` - CSS selector to wait for
+        /// * `timeout_ms` - Maximum time to wait in milliseconds
+        pub async fn wait_for_selector(
+            &self,
+            selector: &str,
+            timeout_ms: u64,
+        ) -> Result<Element<'_>> {
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_millis(timeout_ms);
+
+            loop {
+                match self.find_element(selector).await {
+                    Ok(element) => return Ok(element),
+                    Err(_) if start.elapsed() < timeout => {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+
+        /// Captures a screenshot of the entire page.
+        ///
+        /// # Example
+        /// ```rust,ignore
+        /// let options = CaptureOptions::new()
+        ///     .with_format(ImageFormat::Png)
+        ///     .with_viewport(Viewport::new(1920, 1080).with_device_scale_factor(2.0));
+        ///
+        /// let base64_image = tab.screenshot(options).await?;
+        /// ```
+        pub async fn screenshot(&self, opts: CaptureOptions) -> Result<String> {
+            // Apply viewport if specified
+            if let Some(ref viewport) = opts.viewport {
+                self.set_viewport(viewport).await?;
+            }
+
+            let mut params = json!({
+                "format": opts.format.as_str(),
+                "fromSurface": true,
+                "captureBeyondViewport": opts.full_page,
+            });
+
+            if matches!(opts.format, ImageFormat::Jpeg | ImageFormat::WebP) {
+                params["quality"] = json!(opts.quality.unwrap_or(90));
+            }
+
+            if let Some(ref clip) = opts.clip {
+                params["clip"] = json!({
+                    "x": clip.x,
+                    "y": clip.y,
+                    "width": clip.width,
+                    "height": clip.height,
+                    "scale": clip.scale
+                });
+            }
+
+            if opts.omit_background && matches!(opts.format, ImageFormat::Png) {
+                self.send_cmd(
+                    "Emulation.setDefaultBackgroundColorOverride",
+                    json!({ "color": { "r": 0, "g": 0, "b": 0, "a": 0 } }),
+                )
+                .await?;
+            }
+
+            self.activate().await?;
+
+            let result = self.send_cmd("Page.captureScreenshot", params).await?;
+
+            if opts.omit_background && matches!(opts.format, ImageFormat::Png) {
+                let _ = self
+                    .send_cmd("Emulation.setDefaultBackgroundColorOverride", json!({}))
+                    .await;
+            }
+
+            result["result"]["data"]
+                .as_str()
+                .map(|s| s.to_string())
+                .context("No image data received")
+        }
+
         /// Activates the target tab to bring it to the foreground.
         pub async fn activate(&self) -> Result<&Self> {
             let msg_id = next_id();
@@ -553,13 +1092,64 @@ mod tab {
             Ok(self)
         }
 
-        /// Navigates the tab to the specified URL.
+        /// Navigates the tab to the specified URL and waits for load.
         pub async fn goto(&self, url: &str) -> Result<&Self> {
+            self.send_cmd("Page.enable", json!({})).await?;
+
+            let load_event_future = self
+                .transport
+                .wait_for_event(&self.session_id, "Page.loadEventFired");
+
+            let msg_id = next_id();
+            let msg = json!({ "id": msg_id, "method": "Page.navigate", "params": { "url": url } })
+                .to_string();
+            send_and_get_msg(self.transport.clone(), msg_id, &self.session_id, msg).await?;
+
+            load_event_future.await?;
+            Ok(self)
+        }
+
+        /// Navigates to URL without waiting for load event.
+        pub async fn goto_no_wait(&self, url: &str) -> Result<&Self> {
             let msg_id = next_id();
             let msg = json!({ "id": msg_id, "method": "Page.navigate", "params": { "url": url } })
                 .to_string();
             send_and_get_msg(self.transport.clone(), msg_id, &self.session_id, msg).await?;
             Ok(self)
+        }
+
+        /// Reloads the current page.
+        pub async fn reload(&self) -> Result<&Self> {
+            self.send_cmd("Page.enable", json!({})).await?;
+
+            let load_event_future = self
+                .transport
+                .wait_for_event(&self.session_id, "Page.loadEventFired");
+
+            self.send_cmd("Page.reload", json!({})).await?;
+
+            load_event_future.await?;
+            Ok(self)
+        }
+
+        /// Gets the current URL of the page.
+        pub async fn url(&self) -> Result<String> {
+            self.evaluate_as_string("window.location.href").await
+        }
+
+        /// Gets the page title.
+        pub async fn title(&self) -> Result<String> {
+            self.evaluate_as_string("document.title").await
+        }
+
+        /// Returns the session ID for this tab.
+        pub fn session_id(&self) -> &str {
+            &self.session_id
+        }
+
+        /// Returns the target ID for this tab.
+        pub fn target_id(&self) -> &str {
+            &self.target_id
         }
 
         /// Closes the target tab.
@@ -573,11 +1163,11 @@ mod tab {
 }
 
 // ==========================================
-// Module: Browser (FIXED & OPTIMIZED)
+// Module: Browser
 // ==========================================
 mod browser {
     use crate::transport::{Transport, TransportResponse, next_id};
-    use crate::{CaptureOptions, Tab};
+    use crate::{CaptureOptions, Tab, Viewport};
     use anyhow::{Context, Result, anyhow};
     use rand::{Rng, thread_rng};
     use regex::Regex;
@@ -616,7 +1206,6 @@ mod browser {
     }
 
     impl Drop for CustomTempDir {
-        /// Attempts to delete the temporary directory, retrying on failure.
         fn drop(&mut self) {
             for _ in 0..3 {
                 if std::fs::remove_dir_all(&self.path).is_ok() {
@@ -629,25 +1218,21 @@ mod browser {
     }
 
     /// Holds the browser process and associated temporary directory.
-    /// Responsible for killing process and cleaning up on drop.
     struct BrowserProcess {
         child: Child,
         _temp: CustomTempDir,
     }
 
     impl Drop for BrowserProcess {
-        /// Ensures the child process is killed and waited upon before dropping temp.
         fn drop(&mut self) {
             let _ = self.child.kill();
             let _ = self.child.wait();
-            // `_temp` will be dropped automatically thereafter, deleting the temp dir.
         }
     }
 
     #[derive(Clone)]
     pub struct Browser {
         transport: Arc<Transport>,
-        /// Manages the browser process, wrapped in a mutex for async access and optional ownership.
         process: Arc<Mutex<Option<BrowserProcess>>>,
     }
 
@@ -692,7 +1277,7 @@ mod browser {
             let mut cmd = {
                 use std::os::windows::process::CommandExt;
                 let mut c = Command::new(&exe);
-                c.creation_flags(0x08000000); // CREATE_NO_WINDOW
+                c.creation_flags(0x08000000);
                 c
             };
             #[cfg(not(windows))]
@@ -787,7 +1372,16 @@ mod browser {
                 .await
         }
 
-        /// Captures a screenshot with options such as raw PNG or JPEG.
+        /// Captures a screenshot with options such as format, quality, and viewport.
+        ///
+        /// # Example
+        /// ```rust,ignore
+        /// let options = CaptureOptions::new()
+        ///     .with_format(ImageFormat::Png)
+        ///     .with_viewport(Viewport::new(1920, 1080).with_device_scale_factor(2.0));
+        ///
+        /// let base64 = browser.capture_html_with_options(html, "body", options).await?;
+        /// ```
         pub async fn capture_html_with_options(
             &self,
             html: &str,
@@ -795,15 +1389,37 @@ mod browser {
             opts: CaptureOptions,
         ) -> Result<String> {
             let tab = self.new_tab().await?;
+
+            // Apply viewport if specified in options
+            if let Some(ref viewport) = opts.viewport {
+                tab.set_viewport(viewport).await?;
+            }
+
             tab.set_content(html).await?;
             let el = tab.find_element(selector).await?;
-            let shot = if opts.raw_png {
-                el.raw_screenshot().await?
-            } else {
-                el.screenshot().await?
-            };
+            let shot = el.screenshot_with_options(opts).await?;
             let _ = tab.close().await;
             Ok(shot)
+        }
+
+        /// Captures a high-DPI screenshot with the specified scale factor.
+        ///
+        /// Convenience method for getting sharper images without manually
+        /// configuring viewport and options.
+        ///
+        /// # Arguments
+        /// * `html` - HTML content to render
+        /// * `selector` - CSS selector for the element to capture
+        /// * `scale` - Device scale factor (2.0 for retina, 3.0 for ultra-high DPI)
+        pub async fn capture_html_hidpi(
+            &self,
+            html: &str,
+            selector: &str,
+            scale: f64,
+        ) -> Result<String> {
+            let opts = CaptureOptions::new()
+                .with_viewport(Viewport::default().with_device_scale_factor(scale));
+            self.capture_html_with_options(html, selector, opts).await
         }
 
         /// Closes the browser process and cleans up resources asynchronously.
@@ -877,7 +1493,6 @@ mod exit_hook {
     }
 
     impl Drop for ExitHook {
-        /// Calls the registered exit function on drop.
         fn drop(&mut self) {
             (self.func)();
         }

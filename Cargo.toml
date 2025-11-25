@@ -1,6 +1,6 @@
 [package]
 name = "cdp-html-shot"
-version = "0.1.30"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Nawyjx <3373167460@qq.com>"]
@@ -30,6 +30,10 @@ path = "examples/shindan_to_img.rs"
 [[example]]
 name = "tab_goto"
 path = "examples/tab_goto.rs"
+
+[[example]]
+name = "capture_html_with_options"
+path = "examples/capture_html_with_options.rs"
 
 [dependencies]
 anyhow = "1.0"
