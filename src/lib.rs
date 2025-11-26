@@ -1207,12 +1207,16 @@ mod browser {
 
     impl Drop for CustomTempDir {
         fn drop(&mut self) {
-            for _ in 0..3 {
+            // More aggressive cleanup with longer delays for Windows
+            // Total max wait: ~2.4 seconds (100+200+300*8 ms)
+            for i in 0..10 {
                 if std::fs::remove_dir_all(&self.path).is_ok() {
                     return;
                 }
-                std::thread::sleep(Duration::from_millis(50));
+                // Increasing delay: 100ms, 200ms, 300ms, 300ms, ...
+                std::thread::sleep(Duration::from_millis(100 * (i as u64 + 1).min(3)));
             }
+            // Final attempt - ignore error as we've done our best
             let _ = std::fs::remove_dir_all(&self.path);
         }
     }
@@ -1227,6 +1231,9 @@ mod browser {
         fn drop(&mut self) {
             let _ = self.child.kill();
             let _ = self.child.wait();
+            // Give Chrome time to release file handles before temp dir cleanup
+            // This is especially important on Windows where file locks persist briefly
+            std::thread::sleep(Duration::from_millis(200));
         }
     }
 
