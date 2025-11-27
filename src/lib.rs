@@ -1429,6 +1429,19 @@ mod browser {
             self.capture_html_with_options(html, selector, opts).await
         }
 
+        /// Gracefully shuts down the global browser instance if it exists.
+        /// Does nothing if no instance is present.
+        ///
+        /// Intended primarily for cleanup during application shutdown.
+        pub async fn shutdown_global() {
+            let mut lock = GLOBAL_BROWSER.lock().await;
+            // Take ownership and replace with None to drop the instance.
+            if let Some(browser) = lock.take() {
+                // Perform shutdown only if an instance exists.
+                let _ = browser.close_async().await;
+            }
+        }
+
         /// Closes the browser process and cleans up resources asynchronously.
         pub async fn close_async(&self) -> Result<()> {
             self.transport.shutdown().await;
