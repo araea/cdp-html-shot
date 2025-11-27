@@ -1439,13 +1439,37 @@ mod browser {
             Ok(())
         }
 
+        /// Checks if the browser connection is still alive.
+        async fn is_alive(&self) -> bool {
+            self.transport
+                .send(json!({
+                    "id": next_id(),
+                    "method": "Target.getTargets",
+                    "params": {}
+                }))
+                .await
+                .is_ok()
+        }
+
         /// Returns a shared singleton browser instance, launching if necessary.
+        /// Automatically recreates the instance if it becomes invalid.
         pub async fn instance() -> Self {
             let mut lock = GLOBAL_BROWSER.lock().await;
+
+            // Check if existing instance is still valid
             if let Some(b) = &*lock {
-                return b.clone();
+                if b.is_alive().await {
+                    return b.clone();
+                }
+                // Instance is dead, clean up old process
+                log::warn!("[cdp-html-shot] Browser instance died, recreating...");
+                let _ = b.close_async().await;
             }
+
+            // Recreate instance
             let b = Self::new().await.expect("Init global browser failed");
+
+            // Close default blank page
             if let Ok(TransportResponse::Response(res)) = b
                 .transport
                 .send(json!({"id": next_id(), "method":"Target.getTargets", "params":{}}))
@@ -1458,6 +1482,7 @@ mod browser {
             {
                 let _ = b.transport.send(json!({"id":next_id(), "method":"Target.closeTarget", "params":{"targetId":id}})).await;
             }
+
             *lock = Some(b.clone());
             b
         }
