@@ -26,7 +26,6 @@ async fn main() -> Result<()> {
     "#;
 
     println!("Capturing HTML...");
-    // 直接使用 capture_html 快捷方法
     let base64 = browser.capture_html(HTML, ".card").await?;
     let img_data = base64::prelude::BASE64_STANDARD.decode(base64)?;
 
@@ -40,7 +39,6 @@ async fn main() -> Result<()> {
 
     println!("Screenshot saved to {:?}", output_path);
 
-    // 退出前清理资源
     browser.close_async().await?;
 
     Ok(())
