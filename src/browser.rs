@@ -2,7 +2,7 @@ use crate::tab::Tab;
 use crate::transport::{Transport, TransportResponse, next_id};
 use crate::types::{CaptureOptions, Viewport};
 use anyhow::{Context, Result, anyhow};
-use rand::{Rng, rng};
+use rand::{RngExt, rng};
 use regex::Regex;
 use serde_json::json;
 use std::io::{BufRead, BufReader};

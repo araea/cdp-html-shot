@@ -37,7 +37,7 @@ path = "examples/capture_html_with_options.rs"
 
 [dependencies]
 anyhow = "1.0"
-rand = "0.9"
+rand = "0.10"
 ctrlc = "3.5"
 which = "8.0"
 regex = "1.12"
@@ -46,7 +46,7 @@ serde_json = "1.0"
 futures = "0.3"
 tempfile = "3.23"
 futures-util = "0.3"
-tokio-tungstenite = "0.28"
+tokio-tungstenite = "0.30"
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 
@@ -54,7 +54,7 @@ tokio = { version = "1", features = ["full"] }
 winreg = "0.55"
 
 [dev-dependencies]
-base64 = "0.22"
+base64 = "0.23"
 shindan-maker = { version = "0.1", features = ["full"] }
 
 [features]
