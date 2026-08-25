@@ -20,7 +20,7 @@ pub mod types;
 pub mod utils;
 
 // Re-export main types to the root
-pub use browser::Browser;
+pub use browser::{Browser, LaunchOptions};
 pub use element::Element;
 #[cfg(feature = "atexit")]
 pub use exit_hook::ExitHook;

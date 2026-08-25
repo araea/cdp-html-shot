@@ -12,6 +12,7 @@ A high-performance Rust library for capturing HTML screenshots using the Chrome 
 - **Precise**: Capture screenshots of specific DOM elements via CSS selectors.
 - **HiDPI Support**: Control `deviceScaleFactor` for crystal-clear, high-resolution images.
 - **Flexible**: Full control over viewport, image format, quality, and more.
+- **Portable**: Windows, macOS, Linux, and Android (Termux).
 
 ## Installation
 
@@ -196,6 +197,50 @@ let opts = CaptureOptions::high_quality_jpeg();
 let opts = CaptureOptions::hidpi();       // 2x scale
 let opts = CaptureOptions::ultra_hidpi(); // 3x scale
 ```
+
+### Launch Options
+
+`Browser::new()` picks defaults that suit most callers. Reach for
+`LaunchOptions` when they do not: a browser outside the search path, a specific
+user agent, or extra Chromium switches.
+
+```rust
+use cdp_html_shot::{Browser, LaunchOptions};
+
+let browser = Browser::launch_with(
+    LaunchOptions::new()
+        .path("/opt/chrome/chrome")                     // skip auto-detection
+        .user_agent("my-crawler/1.0")                   // override the default
+        .arg("--proxy-server=socks5://127.0.0.1:1080")  // any extra switch
+        .arg("--lang=zh-CN"),
+)
+.await?;
+```
+
+Switches passed with `.arg()` are appended after the built-in ones, and
+Chromium honours the last occurrence of a repeated switch — so anything set
+this way overrides the corresponding default.
+
+By default the browser is launched with its own version restated as an ordinary
+desktop user agent. Headless Chromium otherwise reports
+`HeadlessChrome/<version>`, which many sites treat as a bot signal. The version
+is read from the executable rather than hardcoded: a stale version string
+contradicts the client hints the browser still reports truthfully through
+`navigator.userAgentData`, and that contradiction is a louder signal than the
+`Headless` token ever was.
+
+### Platform Notes
+
+**Android (Termux)** is supported: install Chromium with `pkg install chromium`
+and it is found automatically under `$PREFIX/bin`.
+
+Android is the one platform where the GPU service is not hosted in the browser
+process. Under heavy WebGL work it crashes there, and — sharing a process with
+the browser — takes the CDP connection down with it, surfacing as an
+unexplained transport error mid-session. Android therefore launches with
+`--disable-gpu --enable-unsafe-swiftshader`, which leaves WebGL working through
+ANGLE's SwiftShader fallback. Pass `--in-process-gpu` yourself via `.arg()` to
+opt back in.
 
 <br>
 

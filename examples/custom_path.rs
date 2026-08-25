@@ -1,6 +1,5 @@
 use cdp_html_shot::{Browser, CaptureOptions, Viewport};
 use std::path::PathBuf;
-use tokio;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -106,6 +105,23 @@ fn detect_browser_path() -> Option<PathBuf> {
         "/usr/bin/chromium",
         "/usr/bin/chromium-browser",
     ];
+
+    // Android 是独立的 target_os，不满足上面的 linux 分支。
+    // Termux 把浏览器装在 $PREFIX/bin 下。
+    #[cfg(target_os = "android")]
+    let paths = [
+        "/data/data/com.termux/files/usr/bin/chromium-browser",
+        "/data/data/com.termux/files/usr/bin/chromium",
+    ];
+
+    // 其余平台没有可猜的路径，交给库自己去找。
+    #[cfg(not(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "android"
+    )))]
+    let paths: [&str; 0] = [];
 
     for path in paths.iter() {
         let p = PathBuf::from(path);

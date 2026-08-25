@@ -7,7 +7,7 @@ use tokio::task;
 async fn main() {
     let hook = ExitHook::new(|| {
         println!("\n[ExitHook] Cleaning up global browser instance...");
-        let _ = futures::executor::block_on(async {
+        futures::executor::block_on(async {
             let browser = Browser::instance().await;
             let _ = browser.close_async().await;
         });
