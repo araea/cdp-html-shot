@@ -1,37 +1,58 @@
+//! Driving a tab: navigate, wait for content, script it, capture part of it.
+//!
+//! ```text
+//! cargo run --example tab_goto
+//! ```
+
 use anyhow::Result;
 use base64::Engine;
-use cdp_html_shot::Browser;
+use cdp_html_shot::{Browser, CaptureOptions};
 use std::path::Path;
-use tokio::{fs, time};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let output_dir = Path::new("screenshots");
-    if !output_dir.exists() {
-        fs::create_dir(output_dir).await?;
-    }
+    let out = Path::new("screenshots");
+    std::fs::create_dir_all(out)?;
 
     let browser = Browser::new().await?;
-
-    println!("Navigating to rust-lang.org...");
     let tab = browser.new_tab().await?;
 
+    println!("Navigating to rust-lang.org...");
     tab.goto("https://www.rust-lang.org/").await?;
 
-    println!("Waiting for render...");
-    time::sleep(time::Duration::from_secs(2)).await;
+    // `goto` returns once the load event fires, but content rendered after it
+    // is not there yet. Wait for the element instead of sleeping for a guessed
+    // duration: it returns the moment the element appears, and fails loudly if
+    // it never does.
+    let main = tab.wait_for_selector("main", 10_000).await?;
 
-    let element = tab.find_element("body").await?;
-    let base64 = element.screenshot().await?;
-    let img_data = base64::prelude::BASE64_STANDARD.decode(base64)?;
+    println!("title:  {}", tab.title().await?);
+    println!("url:    {}", tab.url().await?);
 
-    let output_path = output_dir.join("web_shot.jpeg");
-    fs::write(&output_path, img_data).await?;
-    println!("Saved {:?}", output_path);
+    let headings = tab
+        .evaluate_as_string("document.querySelectorAll('h1, h2').length")
+        .await?;
+    println!("h1/h2:  {headings}");
+
+    // Just the hero, then the whole page for comparison.
+    write(
+        out.join("main.png"),
+        &main
+            .screenshot_with_options(CaptureOptions::raw_png())
+            .await?,
+    )?;
+    write(
+        out.join("page.jpeg"),
+        &tab.screenshot(CaptureOptions::high_quality_jpeg()).await?,
+    )?;
 
     tab.close().await?;
+    browser.close_async().await
+}
 
-    browser.close_async().await?;
-
+fn write(path: std::path::PathBuf, base64: &str) -> Result<()> {
+    let bytes = base64::prelude::BASE64_STANDARD.decode(base64)?;
+    std::fs::write(&path, &bytes)?;
+    println!("wrote   {} ({} bytes)", path.display(), bytes.len());
     Ok(())
 }

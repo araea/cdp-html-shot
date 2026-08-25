@@ -14,6 +14,7 @@ use tokio::sync::{Mutex, oneshot};
 use which::which;
 
 /// Temporary directory for browser user data, deleted on drop.
+#[derive(Debug)]
 struct CustomTempDir {
     path: PathBuf,
 }
@@ -49,6 +50,7 @@ impl Drop for CustomTempDir {
     }
 }
 
+#[derive(Debug)]
 struct BrowserProcess {
     child: Child,
     _temp: CustomTempDir,
@@ -172,7 +174,7 @@ impl LaunchOptions {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Browser {
     transport: Arc<Transport>,
     process: Arc<Mutex<Option<BrowserProcess>>>,

@@ -1,45 +1,47 @@
+//! The shortest useful thing this crate does: HTML in, image file out.
+//!
+//! ```text
+//! cargo run --example shot_html
+//! ```
+
 use anyhow::Result;
 use base64::Engine;
 use cdp_html_shot::Browser;
-use std::fs;
+use std::path::Path;
+
+const HTML: &str = r#"
+<html lang="en">
+  <head><style>
+    body { margin: 0; background: #f1f5f9; font-family: sans-serif; padding: 24px; }
+    .card { background: #fff; padding: 40px; border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, .1); }
+    h1 { margin: 0 0 8px; color: #0f172a; }
+    p  { margin: 0; color: #64748b; }
+  </style></head>
+  <body>
+    <div class="card">
+      <h1>My Test Page</h1>
+      <p>Hello from cdp-html-shot</p>
+    </div>
+  </body>
+</html>
+"#;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let browser = Browser::new().await?;
 
-    const HTML: &str = r#"
-        <html lang="en-US">
-        <head>
-            <style>
-                body { background-color: #f0f0f0; font-family: sans-serif; padding: 20px; }
-                .card { background: white; padding: 40px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-                h1 { color: #333; margin-top: 0; }
-            </style>
-        </head>
-        <body>
-            <div class="card">
-                <h1>My Test Page</h1>
-                <p>Hello from Rust CDP Shot!</p>
-            </div>
-        </body>
-        </html>
-    "#;
-
-    println!("Capturing HTML...");
+    // The selector picks what ends up in the image: the card, not the page
+    // around it.
     let base64 = browser.capture_html(HTML, ".card").await?;
-    let img_data = base64::prelude::BASE64_STANDARD.decode(base64)?;
+    let bytes = base64::prelude::BASE64_STANDARD.decode(base64)?;
 
-    let dir = std::env::current_dir()?.join("screenshots");
-    if !dir.exists() {
-        fs::create_dir_all(&dir)?;
-    }
+    let out = Path::new("screenshots");
+    std::fs::create_dir_all(out)?;
+    let path = out.join("simple_shot.jpeg");
+    std::fs::write(&path, &bytes)?;
 
-    let output_path = dir.join("simple_shot.jpeg");
-    fs::write(&output_path, img_data)?;
+    println!("wrote {} ({} bytes)", path.display(), bytes.len());
 
-    println!("Screenshot saved to {:?}", output_path);
-
-    browser.close_async().await?;
-
-    Ok(())
+    browser.close_async().await
 }

@@ -168,3 +168,29 @@ async fn caller_switches_override_the_defaults() -> Result<()> {
     tab.close().await?;
     browser.close_async().await
 }
+
+/// A selector that matches nothing must say so. CDP answers `DOM.querySelector`
+/// with node id 0 instead of an error, and taking that at face value used to
+/// surface as "Missing backendNodeId" — a message with no bearing on the
+/// actual problem.
+#[tokio::test]
+#[ignore = "requires a Chrome/Chromium installation"]
+async fn a_selector_that_matches_nothing_names_the_selector() -> Result<()> {
+    let browser = Browser::new().await?;
+    let tab = browser.new_tab().await?;
+    tab.set_content(CARD).await?;
+
+    let err = tab
+        .find_element("#no-such-element")
+        .await
+        .expect_err("a missing element must be an error")
+        .to_string();
+
+    assert!(
+        err.contains("#no-such-element"),
+        "the error should name the selector, got: {err}"
+    );
+
+    tab.close().await?;
+    browser.close_async().await
+}

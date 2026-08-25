@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use serde_json::json;
 
 /// Represents a DOM element controlled via CDP.
+#[derive(Debug)]
 pub struct Element<'a> {
     parent: &'a Tab,
     backend_node_id: u64,

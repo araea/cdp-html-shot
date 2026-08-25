@@ -229,6 +229,24 @@ launches with `--disable-gpu --enable-unsafe-swiftshader`, which leaves WebGL
 working through ANGLE's SwiftShader fallback. Pass `--in-process-gpu` through
 `arg` to opt back in.
 
+## Examples
+
+Each one runs on its own and writes what it produces into `screenshots/`.
+
+| Example | Shows |
+| --- | --- |
+| `shot_html` | The short path: HTML in, image file out. |
+| `capture_options` | Format, quality, transparency and scale, one file per variant. |
+| `tab_goto` | Navigating, waiting for content, scripting a page, capturing part of it. |
+| `take_shots` | Many captures in parallel from one browser. |
+| `launch_options` | Custom user agents and extra Chromium switches, verified against the browser. |
+| `static_instance` | One shared browser for a whole process, shut down cleanly on exit. |
+
+```text
+cargo run --example shot_html
+cargo run --example static_instance --features atexit
+```
+
 ## Testing
 
 Unit tests need no browser and run in milliseconds:

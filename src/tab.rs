@@ -9,6 +9,7 @@ use std::time::Duration;
 use tokio::time;
 
 /// Represents a CDP browser tab (target) session.
+#[derive(Debug)]
 pub struct Tab {
     pub(crate) transport: Arc<Transport>,
     pub(crate) session_id: String,
@@ -168,9 +169,15 @@ impl Tab {
         let res_sel =
             send_and_get_msg(self.transport.clone(), msg_id, &self.session_id, msg_sel).await?;
         let data_sel = utils::serde_msg(&res_sel)?;
-        let node_id = data_sel["result"]["nodeId"]
-            .as_u64()
-            .context("Element not found")?;
+
+        // `DOM.querySelector` answers "no match" with node id 0 rather than an
+        // error, so taking the number at face value walks a non-existent node
+        // into `DOM.describeNode` and fails there instead — with a message
+        // ("Missing backendNodeId") that says nothing about the selector.
+        let node_id = match data_sel["result"]["nodeId"].as_u64() {
+            Some(id) if id != 0 => id,
+            _ => return Err(anyhow!("No element matches the selector {selector:?}")),
+        };
 
         Element::new(self, node_id).await
     }
