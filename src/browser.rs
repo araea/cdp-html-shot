@@ -222,39 +222,11 @@ impl Browser {
             .find(|&p| std::net::TcpListener::bind(("127.0.0.1", p)).is_ok())
             .ok_or(anyhow!("No available port"))?;
 
-        let mut args = vec![
-            format!("--remote-debugging-port={}", port),
-            format!("--user-data-dir={}", temp.path.display()),
-            "--no-sandbox".into(),
-            "--no-zygote".into(),
-            "--disable-dev-shm-usage".into(),
-            "--disable-background-networking".into(),
-            "--disable-default-apps".into(),
-            "--disable-extensions".into(),
-            "--disable-sync".into(),
-            "--disable-translate".into(),
-            "--metrics-recording-only".into(),
-            "--safebrowsing-disable-auto-update".into(),
-            "--mute-audio".into(),
-            "--no-first-run".into(),
-            "--hide-scrollbars".into(),
-            "--window-size=1200,1600".into(),
-        ];
-        args.extend(GPU_ARGS.iter().map(|a| a.to_string()));
-
-        if let Some(agent) = options
+        let user_agent = options
             .user_agent
             .clone()
-            .or_else(|| Self::default_user_agent(&exe))
-        {
-            args.push(format!("--user-agent={agent}"));
-        }
-        if options.headless {
-            args.push("--headless=new".into());
-        }
-        // Last, so a caller can override any of the above: Chromium honours
-        // the last occurrence of a repeated switch.
-        args.extend(options.extra_args.iter().cloned());
+            .or_else(|| Self::default_user_agent(&exe));
+        let args = Self::build_args(port, &temp.path, &options, user_agent);
 
         #[cfg(windows)]
         let mut cmd = {
@@ -281,6 +253,82 @@ impl Browser {
         })
     }
 
+    /// The full Chromium command line for one launch.
+    ///
+    /// Split out from [`Browser::launch_with`] so the ordering rule this
+    /// crate promises — caller switches last, overriding the built-ins — is
+    /// checkable without starting a browser.
+    fn build_args(
+        port: u16,
+        user_data_dir: &Path,
+        options: &LaunchOptions,
+        user_agent: Option<String>,
+    ) -> Vec<String> {
+        let mut args = vec![
+            format!("--remote-debugging-port={port}"),
+            format!("--user-data-dir={}", user_data_dir.display()),
+            "--no-sandbox".into(),
+            "--no-zygote".into(),
+            "--disable-dev-shm-usage".into(),
+            "--disable-background-networking".into(),
+            "--disable-default-apps".into(),
+            "--disable-extensions".into(),
+            "--disable-sync".into(),
+            "--disable-translate".into(),
+            "--metrics-recording-only".into(),
+            "--safebrowsing-disable-auto-update".into(),
+            "--mute-audio".into(),
+            "--no-first-run".into(),
+            "--hide-scrollbars".into(),
+            "--window-size=1200,1600".into(),
+        ];
+        args.extend(GPU_ARGS.iter().map(|a| a.to_string()));
+
+        if let Some(agent) = user_agent {
+            args.push(format!("--user-agent={agent}"));
+        }
+        if options.headless {
+            args.push("--headless=new".into());
+        }
+
+        // Last, so a caller can override any of the above: Chromium honours
+        // the last occurrence of a repeated switch.
+        args.extend(options.extra_args.iter().cloned());
+        args
+    }
+
+    /// The major version out of a `--version` line.
+    ///
+    /// `"Chromium 149.0.7827.155"`, `"Google Chrome 131.0.6778.86"` and
+    /// `"Microsoft Edge 130.0.2849.68"` all reduce to their leading number.
+    /// A version is `major.minor.build.patch`; anything with a different shape
+    /// is a product name or a suffix, not a version.
+    fn parse_major_version(version_output: &str) -> Option<u32> {
+        version_output.split_whitespace().find_map(|token| {
+            let mut parts = token.split('.');
+            let major = parts.next()?.parse::<u32>().ok()?;
+            (parts.count() == 3).then_some(major)
+        })
+    }
+
+    /// An ordinary desktop user agent for the given major version.
+    fn user_agent_for(major: u32) -> String {
+        // Android runs the ordinary Linux build under Termux, and its client
+        // hints say so, so it takes the Linux token too.
+        let platform = if cfg!(target_os = "windows") {
+            "Windows NT 10.0; Win64; x64"
+        } else if cfg!(target_os = "macos") {
+            "Macintosh; Intel Mac OS X 10_15_7"
+        } else {
+            "X11; Linux x86_64"
+        };
+
+        format!(
+            "Mozilla/5.0 ({platform}) AppleWebKit/537.36 (KHTML, like Gecko) \
+             Chrome/{major}.0.0.0 Safari/537.36"
+        )
+    }
+
     /// Where the throwaway user-data directory is created.
     ///
     /// The system temp directory, so that a browser killed before its `Drop`
@@ -305,30 +353,8 @@ impl Browser {
     /// no `--user-agent` at all and the browser keeps its own.
     fn default_user_agent(exe: &Path) -> Option<String> {
         let output = Command::new(exe).arg("--version").output().ok()?;
-        // "Chromium 149.0.7827.155", "Google Chrome 131.0.6778.86", ...
-        let major = String::from_utf8_lossy(&output.stdout)
-            .split_whitespace()
-            .find_map(|token| {
-                let mut parts = token.split('.');
-                let major = parts.next()?.parse::<u32>().ok()?;
-                // A version is major.minor.build.patch; anything else is noise.
-                (parts.count() == 3).then_some(major)
-            })?;
-
-        // Android runs the ordinary Linux build under Termux, and its client
-        // hints say so, so it takes the Linux token too.
-        let platform = if cfg!(target_os = "windows") {
-            "Windows NT 10.0; Win64; x64"
-        } else if cfg!(target_os = "macos") {
-            "Macintosh; Intel Mac OS X 10_15_7"
-        } else {
-            "X11; Linux x86_64"
-        };
-
-        Some(format!(
-            "Mozilla/5.0 ({platform}) AppleWebKit/537.36 (KHTML, like Gecko) \
-             Chrome/{major}.0.0.0 Safari/537.36"
-        ))
+        let major = Self::parse_major_version(&String::from_utf8_lossy(&output.stdout))?;
+        Some(Self::user_agent_for(major))
     }
 
     /// Attempts to locate a Chrome or Edge executable in the system.
@@ -617,5 +643,134 @@ impl Browser {
 
         *lock = Some(b.clone());
         b
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args_for(options: &LaunchOptions) -> Vec<String> {
+        Browser::build_args(
+            9222,
+            Path::new("/tmp/profile"),
+            options,
+            Some("agent/1".into()),
+        )
+    }
+
+    fn position_of(args: &[String], needle: &str) -> Option<usize> {
+        args.iter().position(|a| a == needle)
+    }
+
+    #[test]
+    fn defaults_are_headless_and_carry_the_profile() {
+        let args = args_for(&LaunchOptions::new());
+
+        assert!(args.contains(&"--headless=new".to_string()));
+        assert!(args.contains(&"--remote-debugging-port=9222".to_string()));
+        assert!(args.contains(&"--user-data-dir=/tmp/profile".to_string()));
+        assert!(args.contains(&"--user-agent=agent/1".to_string()));
+    }
+
+    #[test]
+    fn headed_mode_omits_the_headless_switch() {
+        let args = args_for(&LaunchOptions::new().headless(false));
+        assert!(!args.iter().any(|a| a.starts_with("--headless")));
+    }
+
+    /// The whole point of accepting extra switches: Chromium honours the last
+    /// occurrence, so a caller's switch must sit after every built-in one.
+    #[test]
+    fn caller_switches_come_after_every_builtin() {
+        let options = LaunchOptions::new()
+            .arg("--window-size=100,100")
+            .args(["--lang=zh-CN", "--proxy-server=http://127.0.0.1:8080"]);
+        let args = args_for(&options);
+
+        let builtin = position_of(&args, "--no-sandbox").expect("built-in switch missing");
+        for caller in [
+            "--window-size=100,100",
+            "--lang=zh-CN",
+            "--proxy-server=http://127.0.0.1:8080",
+        ] {
+            let at = position_of(&args, caller).unwrap_or_else(|| panic!("{caller} missing"));
+            assert!(at > builtin, "{caller} must be able to override built-ins");
+        }
+
+        // The built-in window size is still present; the caller's copy wins by
+        // being later, which is exactly the contract being asserted.
+        let first = position_of(&args, "--window-size=1200,1600").unwrap();
+        let last = position_of(&args, "--window-size=100,100").unwrap();
+        assert!(first < last);
+    }
+
+    #[test]
+    fn no_user_agent_switch_when_the_version_is_unreadable() {
+        let args = Browser::build_args(9222, Path::new("/tmp/p"), &LaunchOptions::new(), None);
+        assert!(!args.iter().any(|a| a.starts_with("--user-agent")));
+    }
+
+    /// Android hosts the GPU service out of process; everywhere else it is
+    /// folded into the browser process. Getting this backwards costs a crash
+    /// that only shows up under load, so it is worth pinning down.
+    #[test]
+    fn gpu_placement_matches_the_platform() {
+        let args = args_for(&LaunchOptions::new());
+        if cfg!(target_os = "android") {
+            assert!(args.contains(&"--disable-gpu".to_string()));
+            assert!(args.contains(&"--enable-unsafe-swiftshader".to_string()));
+            assert!(!args.contains(&"--in-process-gpu".to_string()));
+        } else {
+            assert!(args.contains(&"--in-process-gpu".to_string()));
+            assert!(!args.contains(&"--disable-gpu".to_string()));
+        }
+    }
+
+    #[test]
+    fn version_lines_reduce_to_their_major() {
+        for (line, want) in [
+            ("Chromium 149.0.7827.155", Some(149)),
+            ("Google Chrome 131.0.6778.86 ", Some(131)),
+            ("Microsoft Edge 130.0.2849.68", Some(130)),
+            ("Chromium 120.0.6099.109 snap", Some(120)),
+        ] {
+            assert_eq!(Browser::parse_major_version(line), want, "line: {line}");
+        }
+    }
+
+    #[test]
+    fn non_versions_are_rejected_rather_than_guessed() {
+        for line in ["Chromium", "", "not.a.version", "1.2 3.4"] {
+            assert_eq!(Browser::parse_major_version(line), None, "line: {line}");
+        }
+    }
+
+    /// The `Headless` token is what the override exists to remove; keeping the
+    /// real major version is what keeps it consistent with the client hints.
+    #[test]
+    fn generated_user_agent_hides_headless_and_keeps_the_version() {
+        let agent = Browser::user_agent_for(149);
+        assert!(!agent.contains("Headless"));
+        assert!(agent.contains("Chrome/149.0.0.0"));
+        assert!(agent.starts_with("Mozilla/5.0 ("));
+    }
+
+    #[test]
+    fn temp_profile_is_created_and_removed_with_its_guard() {
+        let root = std::env::temp_dir().join("cdp-html-shot-test-root");
+        let path = {
+            let temp = CustomTempDir::new(root.clone(), "unit").expect("create");
+            assert!(temp.path.is_dir());
+            temp.path.clone()
+        };
+        assert!(!path.exists(), "the guard must remove the profile on drop");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn user_data_root_is_writable() {
+        let root = Browser::user_data_root();
+        assert!(root.is_dir(), "expected a usable directory, got {root:?}");
     }
 }

@@ -240,3 +240,62 @@ impl CaptureOptions {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn viewport_new_keeps_defaults_for_everything_else() {
+        let v = Viewport::new(1024, 768);
+        assert_eq!((v.width, v.height), (1024, 768));
+        assert_eq!(v.device_scale_factor, 1.0);
+        assert!(!v.is_mobile && !v.has_touch && !v.is_landscape);
+    }
+
+    #[test]
+    fn builder_fills_unset_fields_from_the_default() {
+        let v = Viewport::builder().width(390).is_mobile(true).build();
+        let default = Viewport::default();
+
+        assert_eq!(v.width, 390);
+        assert!(v.is_mobile);
+        assert_eq!(v.height, default.height);
+        assert_eq!(v.device_scale_factor, default.device_scale_factor);
+    }
+
+    /// CDP rejects a quality above 100, so it is clamped rather than passed on.
+    #[test]
+    fn quality_is_clamped_to_the_protocol_range() {
+        assert_eq!(CaptureOptions::new().with_quality(200).quality, Some(100));
+        assert_eq!(CaptureOptions::new().with_quality(80).quality, Some(80));
+    }
+
+    #[test]
+    fn presets_match_their_names() {
+        assert_eq!(CaptureOptions::raw_png().format, ImageFormat::Png);
+
+        let jpeg = CaptureOptions::high_quality_jpeg();
+        assert_eq!(jpeg.format, ImageFormat::Jpeg);
+        assert_eq!(jpeg.quality, Some(95));
+
+        let scale = |o: CaptureOptions| o.viewport.unwrap().device_scale_factor;
+        assert_eq!(scale(CaptureOptions::hidpi()), 2.0);
+        assert_eq!(scale(CaptureOptions::ultra_hidpi()), 3.0);
+    }
+
+    #[test]
+    fn image_formats_use_the_protocol_spelling() {
+        assert_eq!(ImageFormat::Jpeg.as_str(), "jpeg");
+        assert_eq!(ImageFormat::Png.as_str(), "png");
+        assert_eq!(ImageFormat::WebP.as_str(), "webp");
+        assert_eq!(ImageFormat::default(), ImageFormat::Jpeg);
+    }
+
+    #[test]
+    fn clip_region_defaults_to_unscaled() {
+        let clip = ClipRegion::new(10.0, 20.0, 300.0, 400.0);
+        assert_eq!(clip.scale, 1.0);
+        assert_eq!(clip.with_scale(2.0).scale, 2.0);
+    }
+}

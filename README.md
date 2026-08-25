@@ -5,29 +5,30 @@
 [<img alt="crates.io" src="https://img.shields.io/crates/v/cdp-html-shot.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/cdp-html-shot)
 [<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-cdp_html_shot-66c2a5?style=for-the-badge&labelColor=555555&logo=docs.rs" height="20">](https://docs.rs/cdp-html-shot)
 
-A high-performance Rust library for capturing HTML screenshots using the Chrome DevTools Protocol (CDP).
+Turn HTML into images by driving a real browser over the Chrome DevTools
+Protocol. Give it a fragment of HTML and a CSS selector; get back a screenshot
+of exactly that element.
 
-- **Robust**: Automatic cleanup of browser processes and temporary files (RAII).
-- **Fast**: Asynchronous API built on `tokio` and WebSockets.
-- **Precise**: Capture screenshots of specific DOM elements via CSS selectors.
-- **HiDPI Support**: Control `deviceScaleFactor` for crystal-clear, high-resolution images.
-- **Flexible**: Full control over viewport, image format, quality, and more.
-- **Portable**: Windows, macOS, Linux, and Android (Termux).
+- **Precise** — capture one DOM element, not a cropped page.
+- **Sharp** — `deviceScaleFactor` for HiDPI output, up to any scale you like.
+- **Async** — built on `tokio` and WebSockets, with no polling.
+- **Tidy** — browser processes and temporary profiles are cleaned up by `Drop`.
+- **Configurable** — full control over viewport, encoding, and the browser's
+  own command line.
+- **Portable** — Windows, macOS, Linux, and Android (Termux).
 
 ## Installation
-
-Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
 cdp-html-shot = "0.2"
 ```
 
-## Examples
+A Chrome, Chromium, or Edge installation is required at runtime. It is located
+automatically; see [Choosing a browser](#choosing-a-browser) to point the
+library somewhere specific.
 
-### Quick Capture
-
-Render HTML strings and capture specific elements instantly.
+## Quick start
 
 ```rust
 use anyhow::Result;
@@ -36,211 +37,212 @@ use cdp_html_shot::Browser;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let html = r#"
-        <html>
-            <body>
-                <h1 id="title">Hello, CDP!</h1>
-            </body>
-        </html>
-    "#;
+    let html = "<h1 id='title' style='font: 48px sans-serif'>Hello, CDP!</h1>";
 
-    // Launch headless browser
     let browser = Browser::new().await?;
+    let base64 = browser.capture_html(html, "#title").await?;
 
-    // Render and capture the <h1> element
-    let base64_image = browser.capture_html(html, "#title").await?;
+    let bytes = base64::prelude::BASE64_STANDARD.decode(base64)?;
+    std::fs::write("screenshot.jpeg", bytes)?;
 
-    // Decode and save
-    let img_data = base64::prelude::BASE64_STANDARD.decode(base64_image)?;
-    std::fs::write("screenshot.jpeg", img_data)?;
-
-    Ok(())
+    browser.close_async().await
 }
 ```
 
-### HiDPI Screenshots
+Screenshots come back base64-encoded, which is what CDP itself returns — decode
+it to get the image bytes.
 
-Capture high-resolution images using `deviceScaleFactor` (similar to Puppeteer's `page.setViewport()`).
+## Capturing
 
-```rust
-use anyhow::Result;
-use base64::Engine;
-use cdp_html_shot::{Browser, CaptureOptions, ImageFormat, Viewport};
+### Encoding and quality
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let browser = Browser::new().await?;
-    let html = "<h1 style='font-size:48px'>Crystal Clear!</h1>";
-
-    // Method 1: Quick HiDPI capture (2x resolution)
-    let base64_image = browser.capture_html_hidpi(html, "h1", 2.0).await?;
-
-    // Method 2: Full control with CaptureOptions
-    let options = CaptureOptions::new()
-        .with_format(ImageFormat::Png)
-        .with_viewport(
-            Viewport::new(1920, 1080)
-                .with_device_scale_factor(3.0) // 3x for ultra-sharp images
-        )
-        .with_omit_background(true); // Transparent background
-
-    let base64_image = browser
-        .capture_html_with_options(html, "h1", options)
-        .await?;
-
-    // Decode and save
-    let img_data = base64::prelude::BASE64_STANDARD.decode(base64_image)?;
-    std::fs::write("hidpi_screenshot.png", img_data)?;
-
-    Ok(())
-}
-```
-
-### Advanced Tab Control
-
-Manually manage tabs, viewport, navigation, and element selection for complex scenarios.
-
-```rust
-use anyhow::Result;
-use base64::Engine;
-use cdp_html_shot::{Browser, CaptureOptions, Viewport};
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let browser = Browser::new().await?;
-    let tab = browser.new_tab().await?;
-
-    // Set viewport with HiDPI scaling
-    tab.set_viewport(
-        &Viewport::new(1280, 720)
-            .with_device_scale_factor(2.0)
-            .with_mobile(false),
-    )
-    .await?;
-
-    // Inject content
-    tab.set_content("<h1>Complex Report</h1><div class='chart'>...</div>")
-        .await?;
-
-    // Wait for dynamic element and capture
-    let element = tab.wait_for_selector(".chart", 5000).await?;
-    let base64_image = element
-        .screenshot_with_options(CaptureOptions::raw_png())
-        .await?;
-
-    // Execute JavaScript
-    let title = tab.evaluate_as_string("document.title").await?;
-    println!("Page title: {}", title);
-
-    // Take full page screenshot
-    let page_screenshot = tab
-        .screenshot(CaptureOptions::high_quality_jpeg())
-        .await?;
-
-    // Cleanup
-    tab.close().await?;
-    browser.close_async().await?;
-
-    Ok(())
-}
-```
-
-### Viewport Configuration
-
-The `Viewport` struct provides full control over page dimensions and device emulation:
-
-```rust
-use cdp_html_shot::Viewport;
-
-// Simple viewport
-let viewport = Viewport::new(1920, 1080);
-
-// HiDPI viewport (2x sharper images)
-let viewport = Viewport::new(1920, 1080)
-    .with_device_scale_factor(2.0);
-
-// Mobile emulation
-let viewport = Viewport::new(375, 812)
-    .with_device_scale_factor(3.0)
-    .with_mobile(true)
-    .with_touch(true);
-
-// Using the builder pattern
-let viewport = Viewport::builder()
-    .width(1440)
-    .height(900)
-    .device_scale_factor(2.0)
-    .is_mobile(false)
-    .build();
-```
-
-### Capture Options
-
-Fine-tune screenshot output with `CaptureOptions`:
+`CaptureOptions` decides how the image is encoded.
 
 ```rust
 use cdp_html_shot::{CaptureOptions, ImageFormat, Viewport};
 
-// PNG with transparency
-let opts = CaptureOptions::new()
+// Explicit
+let options = CaptureOptions::new()
     .with_format(ImageFormat::Png)
-    .with_omit_background(true);
+    .with_omit_background(true)   // transparent background
+    .with_full_page(true);
 
-// High-quality JPEG
-let opts = CaptureOptions::new()
-    .with_format(ImageFormat::Jpeg)
-    .with_quality(95);
-
-// Convenience presets
-let opts = CaptureOptions::raw_png();
-let opts = CaptureOptions::high_quality_jpeg();
-let opts = CaptureOptions::hidpi();       // 2x scale
-let opts = CaptureOptions::ultra_hidpi(); // 3x scale
+// Or start from a preset
+let options = CaptureOptions::raw_png();
+let options = CaptureOptions::high_quality_jpeg();  // JPEG, quality 95
+let options = CaptureOptions::hidpi();              // 2x scale
+let options = CaptureOptions::ultra_hidpi();        // 3x scale
 ```
 
-### Launch Options
+`with_quality` applies to JPEG and WebP, and is clamped to the 0–100 the
+protocol accepts.
 
-`Browser::new()` picks defaults that suit most callers. Reach for
-`LaunchOptions` when they do not: a browser outside the search path, a specific
-user agent, or extra Chromium switches.
+### HiDPI
+
+Raising `deviceScaleFactor` renders more pixels for the same CSS layout, the
+same way `page.setViewport()` does in Puppeteer.
+
+```rust
+use cdp_html_shot::{Browser, CaptureOptions, ImageFormat, Viewport};
+
+let browser = Browser::new().await?;
+let html = "<h1 style='font-size:48px'>Crystal clear</h1>";
+
+// Shorthand
+let base64 = browser.capture_html_hidpi(html, "h1", 2.0).await?;
+
+// Or spell it out
+let options = CaptureOptions::new()
+    .with_format(ImageFormat::Png)
+    .with_viewport(Viewport::new(1920, 1080).with_device_scale_factor(3.0));
+
+let base64 = browser.capture_html_with_options(html, "h1", options).await?;
+```
+
+### Viewport
+
+```rust
+use cdp_html_shot::Viewport;
+
+let desktop = Viewport::new(1920, 1080);
+
+let retina = Viewport::new(1920, 1080).with_device_scale_factor(2.0);
+
+let phone = Viewport::new(375, 812)
+    .with_device_scale_factor(3.0)
+    .with_mobile(true)
+    .with_touch(true);
+
+// Builder form; anything left unset keeps its default.
+let custom = Viewport::builder()
+    .width(1440)
+    .height(900)
+    .device_scale_factor(2.0)
+    .build();
+```
+
+## Tabs
+
+For anything beyond a single capture — navigation, scripting, waiting on
+content that appears late — work with a tab directly.
+
+```rust
+use cdp_html_shot::{Browser, CaptureOptions, Viewport};
+
+let browser = Browser::new().await?;
+let tab = browser.new_tab().await?;
+
+tab.set_viewport(&Viewport::new(1280, 720).with_device_scale_factor(2.0))
+    .await?;
+
+tab.goto("https://example.com").await?;
+println!("{}", tab.evaluate_as_string("document.title").await?);
+
+// Wait for content rendered after load, then capture just that element.
+let chart = tab.wait_for_selector(".chart", 5_000).await?;
+let base64 = chart.screenshot_with_options(CaptureOptions::raw_png()).await?;
+
+// Or the whole page.
+let page = tab.screenshot(CaptureOptions::high_quality_jpeg()).await?;
+
+tab.close().await?;
+browser.close_async().await?;
+```
+
+`set_content` injects HTML without a navigation, which is what `capture_html`
+uses internally.
+
+## Launching the browser
+
+### Choosing a browser
+
+`Browser::new()` searches, in order: the `CHROME` environment variable, the
+usual install locations for the platform, then `PATH`. Flatpak and Snap
+wrappers are skipped, since they cannot be executed directly.
+
+To be explicit, pass a path:
+
+```rust
+use cdp_html_shot::Browser;
+
+let browser = Browser::new_with_path("/opt/chrome/chrome").await?;
+```
+
+### Launch options
+
+`LaunchOptions` covers the rest: headed mode, the user agent, extra Chromium
+switches, and where the throwaway profile is created.
 
 ```rust
 use cdp_html_shot::{Browser, LaunchOptions};
 
 let browser = Browser::launch_with(
     LaunchOptions::new()
-        .path("/opt/chrome/chrome")                     // skip auto-detection
-        .user_agent("my-crawler/1.0")                   // override the default
-        .arg("--proxy-server=socks5://127.0.0.1:1080")  // any extra switch
-        .arg("--lang=zh-CN"),
+        .headless(false)
+        .user_agent("my-crawler/1.0")
+        .arg("--proxy-server=socks5://127.0.0.1:1080")
+        .args(["--lang=zh-CN", "--force-color-profile=srgb"]),
 )
 .await?;
 ```
 
-Switches passed with `.arg()` are appended after the built-in ones, and
-Chromium honours the last occurrence of a repeated switch — so anything set
-this way overrides the corresponding default.
+Switches given to `arg` and `args` are appended **after** the built-in ones.
+Chromium honours the last occurrence of a repeated switch, so anything set this
+way overrides the corresponding default — including defaults this crate sets.
 
-By default the browser is launched with its own version restated as an ordinary
-desktop user agent. Headless Chromium otherwise reports
-`HeadlessChrome/<version>`, which many sites treat as a bot signal. The version
-is read from the executable rather than hardcoded: a stale version string
-contradicts the client hints the browser still reports truthfully through
-`navigator.userAgentData`, and that contradiction is a louder signal than the
-`Headless` token ever was.
+### About the default user agent
 
-### Platform Notes
+Headless Chromium reports `HeadlessChrome/<version>`, which plenty of sites
+treat as a bot signal, so the default restates the same build as an ordinary
+`Chrome/<version>`. The version is read from the executable rather than
+hardcoded: a stale version string contradicts the client hints the browser
+still reports truthfully through `navigator.userAgentData`, and that
+contradiction is a louder signal than the `Headless` token ever was. If the
+version cannot be read, no override is passed and the browser keeps its own.
 
-**Android (Termux)** is supported: install Chromium with `pkg install chromium`
-and it is found automatically under `$PREFIX/bin`.
+### Shared instance
 
-Android is the one platform where the GPU service is not hosted in the browser
-process. Under heavy WebGL work it crashes there, and — sharing a process with
-the browser — takes the CDP connection down with it, surfacing as an
-unexplained transport error mid-session. Android therefore launches with
-`--disable-gpu --enable-unsafe-swiftshader`, which leaves WebGL working through
-ANGLE's SwiftShader fallback. Pass `--in-process-gpu` yourself via `.arg()` to
-opt back in.
+For long-running processes, `Browser::instance()` returns a process-wide
+browser, relaunching it if it has died. `Browser::shutdown_global()` closes it.
+
+```rust
+use cdp_html_shot::Browser;
+
+let browser = Browser::instance().await;
+let base64 = browser.capture_html("<b id='x'>hi</b>", "#x").await?;
+
+Browser::shutdown_global().await;
+```
+
+With the `atexit` feature, `ExitHook` also shuts it down on Ctrl-C.
+
+## Platform notes
+
+**Android (Termux)** — install the browser with `pkg install chromium`; it is
+found automatically under `$PREFIX/bin`.
+
+Android is the one platform where the GPU service is *not* folded into the
+browser process. Under heavy WebGL work it crashes there and, sharing a process
+with the browser, takes the CDP connection down with it — surfacing as an
+unexplained transport error in the middle of a session. Android therefore
+launches with `--disable-gpu --enable-unsafe-swiftshader`, which leaves WebGL
+working through ANGLE's SwiftShader fallback. Pass `--in-process-gpu` through
+`arg` to opt back in.
+
+## Testing
+
+Unit tests need no browser and run in milliseconds:
+
+```text
+cargo test
+```
+
+End-to-end tests drive a real browser and are ignored by default, so the
+default run stays hermetic:
+
+```text
+cargo test --all-features -- --ignored
+```
 
 <br>
 
