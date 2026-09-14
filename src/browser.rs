@@ -64,6 +64,43 @@ impl Drop for BrowserProcess {
     }
 }
 
+/// Ask the kernel to kill the browser when its parent goes away.
+///
+/// [`BrowserProcess::drop`] only runs on an orderly teardown. A host that is
+/// SIGKILLed, aborts on a panic, or leaves through `std::process::exit()` never
+/// gets there, and the browser survives as an orphan that holds memory, keeps
+/// its `--user-data-dir` open and stays connected to nothing. `PR_SET_PDEATHSIG`
+/// makes the kernel send SIGKILL in that case, so the browser cannot outlive
+/// whoever launched it.
+///
+/// The kernel watches the parent **thread**, not the parent process. The spawn
+/// happens on the caller's thread, so keep `launch_with` off short-lived threads:
+/// a `spawn_blocking` thread is reaped after an idle timeout, which would take
+/// the browser down with it. The one `spawn_blocking` in this file only drains
+/// stderr, after the browser is already up, so it is not affected.
+///
+/// The parent can die between `fork` and `prctl`, in which case the signal will
+/// never be delivered — hence the `getppid` check, which lets the child notice
+/// and quit on its own.
+#[cfg(unix)]
+fn arm_parent_death_signal(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    let parent = unsafe { libc::getpid() };
+    // SAFETY: `pre_exec` runs between fork and exec, where only async-signal-safe
+    // calls are sound. prctl, getppid and _exit all are; nothing allocates.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != parent {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+}
+
 /// Flags deciding where the GPU service lives.
 ///
 /// Everywhere but Android the service is hosted inside the browser process,
@@ -239,6 +276,10 @@ impl Browser {
         };
         #[cfg(not(windows))]
         let mut cmd = Command::new(&exe);
+
+        // Keep the browser from outliving us even when nothing gets to run on the way out.
+        #[cfg(unix)]
+        arm_parent_death_signal(&mut cmd);
 
         let mut child = cmd
             .args(args)
@@ -774,5 +815,43 @@ mod tests {
     fn user_data_root_is_writable() {
         let root = Browser::user_data_root();
         assert!(root.is_dir(), "expected a usable directory, got {root:?}");
+    }
+
+    /// The kernel kills the child once its parent thread exits. This is the
+    /// guarantee that keeps a browser from outliving a SIGKILLed host.
+    /// Reads `/proc`, so it is limited to Linux and Android.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn parent_death_signal_kills_the_child_when_the_parent_thread_ends() {
+        use std::time::{Duration, Instant};
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut cmd = Command::new("sleep");
+            cmd.arg("30");
+            arm_parent_death_signal(&mut cmd);
+            let child = cmd.spawn().expect("spawn sleep");
+            tx.send(child.id()).expect("send pid");
+            // The thread ends here, which is exactly what PDEATHSIG watches.
+        });
+        let pid = rx.recv().expect("pid from the spawning thread");
+
+        // Nobody waits on the child, so a killed child stays a zombie; both the
+        // zombie state and a vanished entry mean the signal arrived.
+        let state = |pid: u32| -> Option<char> {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            let (_, rest) = stat.rsplit_once(") ")?;
+            rest.chars().next()
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            match state(pid) {
+                None | Some('Z') | Some('X') => return,
+                _ => std::thread::sleep(Duration::from_millis(50)),
+            }
+        }
+        // SAFETY: best-effort cleanup so a failing test does not leave `sleep` behind.
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        panic!("child {pid} outlived its parent thread: state {:?}", state(pid));
     }
 }
