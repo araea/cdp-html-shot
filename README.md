@@ -38,20 +38,20 @@ async fn main() -> Result<()> {
 - `new_tab`：在同一浏览器中导航、执行脚本、等待选择器并截图
 - `Browser::instance()`：进程级共享实例，结束时调用 `shutdown_global()`
 
-浏览器启动参数使用 `LaunchOptions`，自定义参数通过 `arg` 或 `args` 传入。
+浏览器启动参数使用 `LaunchOptions`。自定义参数通过 `arg` 或 `args` 传入。
 
-浏览器与调用方同寿：正常退出时随 `Browser` 析构回收；Unix 下启动时还会设 `PR_SET_PDEATHSIG`，所以调用方被 SIGKILL、panic-abort 或走 `std::process::exit()` 时，内核会立刻杀掉浏览器，不留占着 `--user-data-dir` 的孤儿。
+浏览器随调用方退出。正常退出时随 `Browser` 析构回收。Unix 下启动时还会设 `PR_SET_PDEATHSIG`。调用方被 SIGKILL、panic-abort 或走 `std::process::exit()` 时，内核会立刻杀掉浏览器，不留占着 `--user-data-dir` 的孤儿。
 
 ## 平台与测试
 
-Termux 可执行 `pkg install chromium`。Android 下默认关闭 GPU 并使用 SwiftShader，需要时可通过启动参数覆盖。
+Termux 可执行 `pkg install chromium`。Android 下默认关闭 GPU 并使用 SwiftShader。需要时可通过启动参数覆盖。
 
 ```sh
 cargo test
 cargo test --all-features -- --ignored
 ```
 
-第二条命令需要本机浏览器，端到端测试默认被忽略。
+第二条命令需要本机浏览器。端到端测试默认被忽略。
 
 ## 许可证
 
