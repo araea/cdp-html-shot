@@ -5,6 +5,7 @@ use anyhow::{Context, Result, anyhow};
 use rand::{RngExt, rng};
 use regex::Regex;
 use serde_json::json;
+use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -13,10 +14,39 @@ use std::time::Duration;
 use tokio::sync::{Mutex, oneshot};
 use which::which;
 
+/// The name every throwaway profile directory starts with.
+const PROFILE_PREFIX: &str = "cdp-shot";
+
+/// File whose lock marks a profile as owned, held for the profile's whole life.
+const OWNER_LOCK: &str = ".cdp-html-shot.lock";
+
+/// How young a profile must be to be spared a sweep.
+///
+/// A profile is created a moment before its lock is taken, and a sweep landing
+/// in that gap would mistake a brand-new profile for an orphan. The age floor
+/// costs nothing, because the lock — not the age — is what tells a dead owner's
+/// profile from a live one.
+#[cfg(unix)]
+const SWEEP_GRACE: Duration = Duration::from_secs(60);
+
+/// Chromium feature that downloads the 2.8 GB on-device optimization model.
+///
+/// Every fresh profile would fetch it again, which turns a leftover profile
+/// from a rounding error into a real cost.
+const MODEL_DOWNLOAD_FEATURE: &str = "OptimizationGuideModelDownloading";
+
 /// Temporary directory for browser user data, deleted on drop.
+///
+/// The directory carries a locked file for as long as its owner lives. The
+/// kernel releases that lock when the owning process dies, however it dies,
+/// which is what lets [`sweep_orphaned_profiles`] separate a profile whose
+/// owner is gone from one that is still in use.
 #[derive(Debug)]
 struct CustomTempDir {
     path: PathBuf,
+    /// Released in `drop` before the directory goes away: on Windows an open
+    /// handle inside a directory blocks its removal.
+    lock: Option<File>,
 }
 
 impl CustomTempDir {
@@ -34,12 +64,62 @@ impl CustomTempDir {
         );
         let path = base.join(name);
         std::fs::create_dir(&path)?;
-        Ok(Self { path })
+        match Self::claim(&path) {
+            Ok(lock) => Ok(Self {
+                path,
+                lock: Some(lock),
+            }),
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&path);
+                Err(e.into())
+            }
+        }
+    }
+
+    /// Take the ownership lock on a profile directory.
+    ///
+    /// Fails while another live process holds it.
+    fn claim(path: &Path) -> std::io::Result<File> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path.join(OWNER_LOCK))?;
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            // SAFETY: `file` owns the descriptor for the duration of the call.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        Ok(file)
+    }
+
+    /// Whether the directory's owner is gone.
+    ///
+    /// A profile only counts when it carries our lock file. Directories without
+    /// one were not created by a version that takes the lock, and such a profile
+    /// may be very much in use — an older build of this library, or a different
+    /// program that happens to use the same prefix. Being unable to tell a live
+    /// profile from a dead one, the sweep has to leave it alone.
+    ///
+    /// Only Unix can answer: elsewhere [`Self::claim`] takes no real lock, so a
+    /// profile must never be swept on the strength of it.
+    #[cfg(unix)]
+    fn is_orphaned(path: &Path) -> bool {
+        if !path.join(OWNER_LOCK).is_file() {
+            return false;
+        }
+        Self::claim(path).is_ok()
     }
 }
 
 impl Drop for CustomTempDir {
     fn drop(&mut self) {
+        // Let go of the lock first: an open handle inside the directory keeps
+        // Windows from removing it.
+        self.lock = None;
         for i in 0..10 {
             if std::fs::remove_dir_all(&self.path).is_ok() {
                 return;
@@ -47,6 +127,53 @@ impl Drop for CustomTempDir {
             std::thread::sleep(Duration::from_millis(100 * (i as u64 + 1).min(3)));
         }
         let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Delete profiles whose owning process died without running its destructor.
+///
+/// [`CustomTempDir::drop`] is the orderly path, and a host that is SIGKILLed,
+/// aborts on a panic or leaves through `std::process::exit()` never reaches it.
+/// The lock it held, though, the kernel releases no matter how it died. Sweeping
+/// at launch turns that into self-healing, which is what the profiles need where
+/// nothing else cleans the temp directory: Termux's `$PREFIX/tmp` is never
+/// swept by the system, so a leftover profile there is leftover forever.
+///
+/// Unix only; see [`CustomTempDir::is_orphaned`].
+#[cfg(unix)]
+fn sweep_orphaned_profiles(root: &Path, grace: Duration) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(rest) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(PROFILE_PREFIX))
+        else {
+            continue;
+        };
+        if !rest.starts_with('_') {
+            continue;
+        }
+        let path = entry.path();
+        // `symlink_metadata` on purpose: a symlink points somewhere that is not
+        // ours to delete.
+        if !path.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        let young = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age < grace);
+        if young {
+            continue;
+        }
+        if CustomTempDir::is_orphaned(&path) {
+            let _ = std::fs::remove_dir_all(&path);
+        }
     }
 }
 
@@ -255,7 +382,11 @@ impl Browser {
             Some(root) => root,
             None => Self::user_data_root(),
         };
-        let temp = CustomTempDir::new(root, "cdp-shot")?;
+        // A host that died without cleaning up left its profile behind; take the
+        // chance to clear it out before adding another one.
+        #[cfg(unix)]
+        sweep_orphaned_profiles(&root, SWEEP_GRACE);
+        let temp = CustomTempDir::new(root, PROFILE_PREFIX)?;
         let exe = Self::find_chrome(options.path.clone())?;
         let port = (8000..9000)
             .find(|&p| std::net::TcpListener::bind(("127.0.0.1", p)).is_ok())
@@ -324,6 +455,10 @@ impl Browser {
             "--no-first-run".into(),
             "--hide-scrollbars".into(),
             "--window-size=1200,1600".into(),
+            // Fresh profiles are throwaway, so the on-device model is dead weight
+            // at 2.8 GB a fetch. A caller's own `--disable-features` reintroduces
+            // this entry rather than replacing it — see below.
+            format!("--disable-features={MODEL_DOWNLOAD_FEATURE}"),
         ];
         args.extend(GPU_ARGS.iter().map(|a| a.to_string()));
 
@@ -336,7 +471,17 @@ impl Browser {
 
         // Last, so a caller can override any of the above: Chromium honours
         // the last occurrence of a repeated switch.
-        args.extend(options.extra_args.iter().cloned());
+        for arg in &options.extra_args {
+            // Chromium keeps only the last `--disable-features`, so a caller
+            // naming one feature would otherwise switch the model download back
+            // on. Fold our entry into the caller's list instead.
+            match arg.strip_prefix("--disable-features=") {
+                Some(extra) => args.push(format!(
+                    "--disable-features={MODEL_DOWNLOAD_FEATURE},{extra}"
+                )),
+                None => args.push(arg.clone()),
+            }
+        }
         args
     }
 
@@ -375,8 +520,9 @@ impl Browser {
     /// Where the throwaway user-data directory is created.
     ///
     /// The system temp directory, so that a browser killed before its `Drop`
-    /// runs leaves its profile somewhere the OS cleans up. Earlier versions
-    /// used `./temp`, which littered whatever project the caller happened to
+    /// runs leaves its profile somewhere a later launch can reclaim it —
+    /// [`sweep_orphaned_profiles`] does that on Unix. Earlier versions used
+    /// `./temp`, which littered whatever project the caller happened to
     /// run from and failed outright when that directory was read-only. The
     /// working directory is still the fallback, for the rare system with no
     /// usable temp directory.
@@ -852,6 +998,127 @@ mod tests {
         }
         // SAFETY: best-effort cleanup so a failing test does not leave `sleep` behind.
         unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-        panic!("child {pid} outlived its parent thread: state {:?}", state(pid));
+        panic!(
+            "child {pid} outlived its parent thread: state {:?}",
+            state(pid)
+        );
+    }
+
+    fn test_root(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "cdp-html-shot-sweep-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&root).expect("create test root");
+        root
+    }
+
+    /// A profile whose owner was killed without unwinding keeps its directory.
+    /// An unlocked lock file is exactly what that leaves behind.
+    #[cfg(unix)]
+    #[test]
+    fn sweep_removes_a_profile_whose_owner_is_gone() {
+        let root = test_root("orphan");
+        let path = root.join(format!("{PROFILE_PREFIX}_20260101_000000_orphan"));
+        std::fs::create_dir(&path).expect("create profile");
+        std::fs::write(path.join(OWNER_LOCK), b"").expect("write lock file");
+
+        sweep_orphaned_profiles(&root, Duration::ZERO);
+
+        assert!(!path.exists(), "an unowned profile must be swept");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A profile without our lock file may belong to an older build that is
+    /// still running, so it is never the sweep's to judge.
+    #[cfg(unix)]
+    #[test]
+    fn sweep_spares_a_profile_without_a_lock_file() {
+        let root = test_root("lockless");
+        let path = root.join(format!("{PROFILE_PREFIX}_20260101_000000_legacy"));
+        std::fs::create_dir(&path).expect("create profile");
+
+        sweep_orphaned_profiles(&root, Duration::ZERO);
+
+        assert!(path.is_dir(), "a lock-less profile must be left alone");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The sweep must never touch a profile that is still in use.
+    #[cfg(unix)]
+    #[test]
+    fn sweep_spares_a_profile_that_is_still_owned() {
+        let root = test_root("live");
+        let live = CustomTempDir::new(root.clone(), PROFILE_PREFIX).expect("create");
+
+        sweep_orphaned_profiles(&root, Duration::ZERO);
+
+        assert!(
+            live.path.is_dir(),
+            "a locked profile must survive the sweep"
+        );
+        drop(live);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Only our own directories are eligible: a shared temp root holds plenty
+    /// of other things, and a lookalike name must not become collateral.
+    #[cfg(unix)]
+    #[test]
+    fn sweep_leaves_unrelated_entries_alone() {
+        let root = test_root("mixed");
+        let other = root.join("cdp-shot-not-ours");
+        std::fs::create_dir(&other).expect("create other");
+
+        sweep_orphaned_profiles(&root, Duration::ZERO);
+
+        assert!(other.is_dir(), "a lookalike name must not be swept");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A profile is created a moment before its lock is taken. A sweep landing
+    /// in that gap would delete a concurrent launch's brand-new profile.
+    #[cfg(unix)]
+    #[test]
+    fn sweep_spares_a_freshly_created_profile() {
+        let root = test_root("fresh");
+        let path = root.join(format!("{PROFILE_PREFIX}_20260101_000000_abcdef"));
+        std::fs::create_dir(&path).expect("create profile");
+
+        sweep_orphaned_profiles(&root, Duration::from_secs(60));
+
+        assert!(path.is_dir(), "a fresh profile must survive");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Every fresh profile would otherwise fetch the on-device model again, so
+    /// the switch has to be there by default.
+    #[test]
+    fn the_on_device_model_download_is_off_by_default() {
+        let args = args_for(&LaunchOptions::new());
+        assert!(
+            args.iter()
+                .any(|a| a == &format!("--disable-features={MODEL_DOWNLOAD_FEATURE}")),
+            "expected the model download to be off, got {args:?}"
+        );
+    }
+
+    /// Chromium keeps only the last `--disable-features`, so a caller naming one
+    /// feature must not switch the model download back on.
+    #[test]
+    fn a_caller_disable_features_keeps_the_model_download_off() {
+        let args = args_for(&LaunchOptions::new().arg("--disable-features=Translate"));
+
+        let last = args
+            .iter()
+            .filter_map(|a| a.strip_prefix("--disable-features="))
+            .next_back()
+            .expect("a --disable-features switch");
+        assert!(last.contains(MODEL_DOWNLOAD_FEATURE), "got {last}");
+        assert!(last.contains("Translate"), "got {last}");
     }
 }

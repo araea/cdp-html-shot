@@ -6,7 +6,7 @@ Rust 库：通过 Chrome DevTools Protocol 把 HTML 或网页元素截图为 PNG
 
 ```toml
 [dependencies]
-cdp-html-shot = "0.2"
+cdp-html-shot = "0.3"
 ```
 
 运行时需要 Chrome、Chromium 或 Edge。`Browser::new()` 会自动查找，也可用 `Browser::new_with_path()` 指定可执行文件。
@@ -40,7 +40,17 @@ async fn main() -> Result<()> {
 
 浏览器启动参数使用 `LaunchOptions`。自定义参数通过 `arg` 或 `args` 传入。
 
-浏览器随调用方退出。正常退出时随 `Browser` 析构回收。Unix 下启动时还会设 `PR_SET_PDEATHSIG`。调用方被 SIGKILL、panic-abort 或走 `std::process::exit()` 时，内核会立刻杀掉浏览器，不留占着 `--user-data-dir` 的孤儿。
+默认关闭 Chromium 的端上优化模型下载（`--disable-features=OptimizationGuideModelDownloading`）。临时 profile 是一次性的，这个模型每个新 profile 都要重下约 2.8 GB。调用方自带 `--disable-features` 时，这一项会并进调用方的列表，不会被顶掉。
+
+## 临时 profile 的生命周期
+
+每次启动浏览器都会在系统临时目录下建一个 `cdp-shot_<时间>_<随机>` 目录作为 `--user-data-dir`，正常析构时删除。
+
+目录里有一个 `.cdp-html-shot.lock`，由创建它的进程持有 `flock`。进程无论怎么死，内核都会释放这把锁；下一次启动时库扫同目录下的 `cdp-shot_*`，把锁已经没人持有的（也就是宿主被 SIGKILL、panic-abort、走 `std::process::exit()` 这类没走到析构的）删掉。所以不正常的退出不会永久留下 profile。
+
+浏览器进程本身也随调用方退出：Unix 下启动时设 `PR_SET_PDEATHSIG`，调用方一死内核就杀掉浏览器，不留占着 `--user-data-dir` 的孤儿。
+
+这把锁只在 Unix 上真正生效。Windows 下目录仍由析构删除，但没有这种自愈清扫。
 
 ## 平台与测试
 
