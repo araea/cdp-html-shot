@@ -1,6 +1,6 @@
 # cdp-html-shot
 
-Rust 库：通过 Chrome DevTools Protocol 把 HTML 或网页元素截图为 PNG、JPEG 或 WebP。
+Rust 库，通过 Chrome DevTools Protocol 将 HTML 或网页元素截图为 PNG、JPEG 或 WebP。
 
 ## 安装
 
@@ -9,9 +9,9 @@ Rust 库：通过 Chrome DevTools Protocol 把 HTML 或网页元素截图为 PNG
 cdp-html-shot = "0.3"
 ```
 
-运行时需要 Chrome、Chromium 或 Edge。`Browser::new()` 会自动查找，也可用 `Browser::new_with_path()` 指定可执行文件。
+运行时需要 Chrome、Chromium 或 Edge。`Browser::new()` 自动查找浏览器；也可用 `Browser::new_with_path()` 指定路径。
 
-## 快速开始
+## 示例
 
 ```rust
 use anyhow::Result;
@@ -28,40 +28,32 @@ async fn main() -> Result<()> {
 }
 ```
 
-截图结果是 Base64 字符串，需自行解码为图像字节。
+截图方法返回 Base64 字符串，调用方负责解码为图像字节。
 
-## 常用接口
+## 接口
 
-- `capture_html`：注入 HTML 并截取指定选择器
-- `capture_html_with_options`：用 `CaptureOptions` 设置格式、质量、透明背景、全页截图与视口
-- `capture_html_hidpi`：按指定 `deviceScaleFactor` 输出
-- `new_tab`：在同一浏览器中导航、执行脚本、等待选择器并截图
-- `Browser::instance()`：进程级共享实例，结束时调用 `shutdown_global()`
+- `capture_html`：渲染 HTML 并截取指定选择器。
+- `capture_html_with_options`：通过 `CaptureOptions` 设置格式、质量、透明背景、全页截图和视口。
+- `capture_html_hidpi`：设置 `deviceScaleFactor` 截图。
+- `new_tab`：在同一浏览器中导航、执行脚本、等待选择器和截图。
+- `Browser::instance()`：获取进程级共享实例；结束时调用 `shutdown_global()`。
 
-浏览器启动参数使用 `LaunchOptions`。自定义参数通过 `arg` 或 `args` 传入。
+浏览器通过 `LaunchOptions` 配置，可用 `arg` 或 `args` 添加启动参数。库默认关闭 Chromium 的端侧优化模型下载（`--disable-features=OptimizationGuideModelDownloading`），以免一次性临时 profile 重复下载约 2.8 GB 的模型；调用方提供的 `--disable-features` 会与该选项合并。
 
-默认关闭 Chromium 的端上优化模型下载（`--disable-features=OptimizationGuideModelDownloading`）。临时 profile 是一次性的，这个模型每个新 profile 都要重下约 2.8 GB。调用方自带 `--disable-features` 时，这一项会并进调用方的列表，不会被顶掉。
+## 运行与清理
 
-## 临时 profile 的生命周期
+每次启动都会在系统临时目录创建独立的 `cdp-shot_*` profile，正常析构时删除。Unix 下进程锁用于清理异常退出后遗留的 profile，浏览器也会随宿主进程退出。Windows 仅在正常析构时清理目录。
 
-每次启动浏览器都会在系统临时目录下建一个 `cdp-shot_<时间>_<随机>` 目录作为 `--user-data-dir`，正常析构时删除。
+Termux 可通过 `pkg install chromium` 安装浏览器。Android 默认关闭 GPU 并使用 SwiftShader，必要时可用启动参数覆盖。
 
-目录里有一个 `.cdp-html-shot.lock`，由创建它的进程持有 `flock`。进程无论怎么死，内核都会释放这把锁；下一次启动时库扫同目录下的 `cdp-shot_*`，把锁已经没人持有的（也就是宿主被 SIGKILL、panic-abort、走 `std::process::exit()` 这类没走到析构的）删掉。所以不正常的退出不会永久留下 profile。
-
-浏览器进程本身也随调用方退出：Unix 下启动时设 `PR_SET_PDEATHSIG`，调用方一死内核就杀掉浏览器，不留占着 `--user-data-dir` 的孤儿。
-
-这把锁只在 Unix 上真正生效。Windows 下目录仍由析构删除，但没有这种自愈清扫。
-
-## 平台与测试
-
-Termux 可执行 `pkg install chromium`。Android 下默认关闭 GPU 并使用 SwiftShader。需要时可通过启动参数覆盖。
+## 测试
 
 ```sh
 cargo test
 cargo test --all-features -- --ignored
 ```
 
-第二条命令需要本机浏览器。端到端测试默认被忽略。
+第二条命令需要本机浏览器；端到端测试默认忽略。
 
 ## 许可证
 
