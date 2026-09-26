@@ -7,7 +7,7 @@ authors = ["Nawyjx <3373167460@qq.com>"]
 documentation = "https://docs.rs/cdp-html-shot"
 repository = "https://github.com/araea/cdp-html-shot"
 keywords = ["html", "screenshot", "cdp", "html-to-image", "html2image"]
-description = "Rust 截图库 · cdp-html-shot。"
+description = "Rust 截图库：通过 Chrome DevTools Protocol 把 HTML 或网页元素截图为 PNG、JPEG 或 WebP。"
 categories = ["multimedia::images", "asynchronous", "web-programming::websocket", "web-programming"]
 
 [[example]]
